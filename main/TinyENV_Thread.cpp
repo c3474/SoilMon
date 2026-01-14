@@ -36,10 +36,13 @@
 #endif
 
 /* ========= ESP Sleep Helpers ========= */
+static esp_pm_lock_handle_t s_no_ls_lock = nullptr;
+
 static constexpr uint32_t SLEEP_SECONDS = 120;        // NORMAL MODE Refresh interval
 static constexpr uint32_t DEBUG_UPDATE_MS = 1000;     // DEBUG MODE Refresh interval 
 static constexpr uint32_t WAKE_GRACE_MS = 500;        // let packets flush
 static constexpr uint32_t COMMISSIONED_AWAKE_UPDATE_MS = 100; // optional
+
 
 static void goToDeepSleepSeconds(uint32_t seconds) {
   esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);  // convert seconds to MICROseconds (eg. x 1,000,000)
@@ -95,8 +98,8 @@ float g_lastRH    = 99.0f;
 static inline float C_to_F(float c) { return (c * 9.0f / 5.0f) + 32.0f; }
 
 // ---------- LED Blink Helper ---------
-static inline void ledOn()  { digitalWrite(LED_PIN, HIGH); }
-static inline void ledOff() { digitalWrite(LED_PIN, LOW);  }
+static inline void ledOn()  { digitalWrite(LED_PIN, LOW); }
+static inline void ledOff() { digitalWrite(LED_PIN, HIGH);  }
 
 static void blink(uint8_t n) {
   for (uint8_t i = 0; i < n; i++) {
@@ -278,7 +281,13 @@ void setup() {
   // Matter endpoints
   TempSensor.begin(g_lastTempC);   // °C
   HumiditySensor.begin(g_lastRH);
+  esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "no_ls", &s_no_ls_lock);
 
+  // If not commissioned OR debug mode, keep the chip out of light sleep
+  loadDebugMode();
+  if (!Matter.isDeviceCommissioned() || DEBUG_MODE) {
+    esp_pm_lock_acquire(s_no_ls_lock);
+  }
   Matter.begin();
   
   // Commission if needed (info via Serial)
@@ -345,6 +354,10 @@ void loop() {
     return;
   }
 
+  if (Matter.isDeviceCommissioned() && !DEBUG_MODE && s_no_ls_lock) {
+    esp_pm_lock_release(s_no_ls_lock);
+  }
+  
   sensorUpdate();
 
   if (!DEBUG_MODE) {
