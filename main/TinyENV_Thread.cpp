@@ -29,11 +29,21 @@
 #include "esp_openthread.h"
 #include <openthread/link.h>
 #include "esp_sleep.h"
+#include "esp_err.h"
 #include <Preferences.h>
 
 #if !CONFIG_ENABLE_CHIPOBLE
   #include <WiFi.h>
 #endif
+
+// ------------ Board Pin Defs -----------------
+#define SDA_PIN 22
+#define SCL_PIN 23
+#define VBAT_ADC_PIN A0   // GPIO0 (XIAO ESP32-C6 A0)
+#define LED_PIN 15
+const uint8_t BUTTON_PIN = BOOT_PIN;
+//Forward Declarations
+static void blink(uint8_t n);
 
 /* ========= ESP Sleep Helpers ========= */
 static esp_pm_lock_handle_t s_no_ls_lock = nullptr;
@@ -43,7 +53,6 @@ static constexpr uint32_t DEBUG_UPDATE_MS = 1000;     // DEBUG MODE Refresh inte
 static constexpr uint32_t WAKE_GRACE_MS = 500;        // let packets flush
 static constexpr uint32_t COMMISSIONED_AWAKE_UPDATE_MS = 100; // optional
 
-
 static void goToDeepSleepSeconds(uint32_t seconds) {
   esp_sleep_enable_timer_wakeup((uint64_t)seconds * 1000000ULL);  // convert seconds to MICROseconds (eg. x 1,000,000)
   delay(WAKE_GRACE_MS);
@@ -52,9 +61,7 @@ static void goToDeepSleepSeconds(uint32_t seconds) {
 
 /* =========== Debug Mode Switch ======== */
 Preferences prefs;
-static bool DEBUG_MODE = false;
-// button handling
-const uint8_t BUTTON_PIN = BOOT_PIN;
+bool DEBUG_MODE = false;
 
 static bool pressed = false;
 static bool longpress_fired = false;
@@ -68,12 +75,6 @@ static constexpr uint32_t TOGGLE_COOLDOWN_MS = 300;
 #define VPRINT(...)   do { if (DEBUG_MODE) Serial.print(__VA_ARGS__); } while (0)
 #define VPRINTLN(...) do { if (DEBUG_MODE) Serial.println(__VA_ARGS__); } while (0)
 #define VPRINTF(...) do { if (DEBUG_MODE) Serial.printf(__VA_ARGS__); } while (0)
-
-// ------------ Board Pin Defs -----------------
-#define SDA_PIN 22
-#define SCL_PIN 23
-#define VBAT_ADC_PIN A0   // GPIO0 (XIAO ESP32-C6 A0)
-#define LED_PIN 15
 
 // ----------- Matter Endpoints -------------
 MatterTemperatureSensorBattery TempSensor;      // °C (Matter spec)
@@ -263,16 +264,22 @@ static void sensorUpdate() {
 // ==================================================
 
 void setup() {
+  //TESTING WAKEUP TIME
+  Serial.println(millis());
+  // END TEST
+
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
   ledOff();
-  
+
   Serial.begin(115200);
   Serial.println("\nTiny Room Sensor (headless, Matter + SHT41)");
   delay(200);
 
-  loadDebugMode();
   blink(DEBUG_MODE ? 2 : 1);   // 2 blinks = debug on, 1 blink = normal
+
+  //Battery reading init
+  pinMode(VBAT_ADC_PIN, ANALOG);
   analogReadResolution(12);
   analogSetPinAttenuation(VBAT_ADC_PIN, ADC_11db);
 
@@ -335,6 +342,7 @@ void setup() {
 // ===================================================
 
 void loop() {
+
   handleBootButton();
 
   static uint32_t commissioned_since_ms = 0;
@@ -361,8 +369,11 @@ void loop() {
   sensorUpdate();
 
   if (!DEBUG_MODE) {
-    goToDeepSleepSeconds(SLEEP_SECONDS);
+    goToDeepSleepSeconds(SLEEP_SECONDS); //TESTING THIS WITHOUT DEEP SLEEP
   } else {
   vTaskDelay(pdMS_TO_TICKS(DEBUG_UPDATE_MS));
   }
+  //TESTING WAKUP TIME
+  Serial.println(millis());
+  //END TEST
 }
