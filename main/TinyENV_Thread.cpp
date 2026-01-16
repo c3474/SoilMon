@@ -49,7 +49,7 @@ static void blink(uint8_t n);
 static esp_pm_lock_handle_t s_no_ls_lock = nullptr;
 
 static constexpr uint32_t SLEEP_SECONDS = 120;        // NORMAL MODE Refresh interval
-static constexpr uint32_t DEBUG_UPDATE_MS = 1000;     // DEBUG MODE Refresh interval 
+static constexpr uint32_t DEBUG_UPDATE_MS = 5000;     // DEBUG MODE Refresh interval 
 static constexpr uint32_t WAKE_GRACE_MS = 500;        // let packets flush
 static constexpr uint32_t COMMISSIONED_AWAKE_UPDATE_MS = 100; // optional
 
