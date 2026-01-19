@@ -24,7 +24,7 @@
 #include <MatterEndPoint.h>
 #include "esp_pm.h"
 #include <Wire.h>
-#include <Adafruit_SHT4x.h>
+#include <SHT4xMinimal.h>
 #include <MatterEndpoints/MatterTemperatureSensorBattery.h>
 #include "esp_openthread.h"
 #include <openthread/link.h>
@@ -46,15 +46,11 @@ static void blink(uint8_t n);
 /* ========= ESP Sleep Helpers ========= */
 static esp_pm_lock_handle_t s_no_ls_lock = nullptr;
 
-static constexpr uint32_t SLEEP_SECONDS = 120;        // NORMAL MODE Refresh interval
-static constexpr uint32_t DEBUG_UPDATE_MS = 5000;     // DEBUG MODE Refresh interval
-static constexpr uint32_t WAKE_GRACE_MS = 500;        // let packets flush
-static constexpr uint32_t ICD_POLL_PERIOD_MS = 60000; // Thread SED poll interval
-
-static void idleUntilNextUpdate(uint32_t seconds) {
-  delay(WAKE_GRACE_MS);
-  vTaskDelay(pdMS_TO_TICKS(seconds * 1000));
-}
+static constexpr uint32_t SLEEP_SECONDS = 120;           // Normal refresh interval
+static constexpr uint32_t DEBUG_UPDATE_MS = 5000;        // Debug refresh interval
+static constexpr uint32_t COMMISSION_GRACE_MS = 15000;   // Allow time for initial networking
+static constexpr uint32_t ICD_POLL_PERIOD_MS = 60000;    // Thread SED poll interval
+static constexpr uint32_t THREAD_RX_ON_POLL_MS = 1000;   // Fast poll when not sleepy
 
 /* =========== Debug Mode Switch ======== */
 Preferences prefs;
@@ -85,7 +81,7 @@ const char *password = "your-password";  // Change this to your WiFi password
 #endif
 
 // ---------- SHT41 Init ----------
-Adafruit_SHT4x sht4;
+SHT4xMinimal sht4;
 bool sht_ready = false;
 
 // ---------- Cached readings ----------
@@ -118,12 +114,24 @@ static void configureThreadIcdMode(bool debug) {
   const bool rx_on_when_idle = debug;
   otLinkSetRxOnWhenIdle(ot, rx_on_when_idle);
 
-  const uint32_t poll_ms = debug ? 1000 : ICD_POLL_PERIOD_MS;
+  const uint32_t poll_ms = debug ? THREAD_RX_ON_POLL_MS : ICD_POLL_PERIOD_MS;
   otLinkSetPollPeriod(ot, poll_ms);
 
   VPRINTF("Thread ICD: rx_on_when_idle=%s, poll=%lu ms\r\n",
           rx_on_when_idle ? "true" : "false",
           static_cast<unsigned long>(poll_ms));
+}
+
+static void applyPowerPolicy(bool commissioned) {
+  const bool allow_sleep = commissioned && !DEBUG_MODE;
+  if (s_no_ls_lock) {
+    if (allow_sleep) {
+      esp_pm_lock_release(s_no_ls_lock);
+    } else {
+      esp_pm_lock_acquire(s_no_ls_lock);
+    }
+  }
+  configureThreadIcdMode(!allow_sleep);
 }
 // ---------- DEBUG MODE HELPER --------
 static void loadDebugMode() {
@@ -173,14 +181,7 @@ static void handleBootButton() {
       last_toggle_ms = now;
       DEBUG_MODE = !DEBUG_MODE;
       saveDebugMode();
-      configureThreadIcdMode(DEBUG_MODE);
-      if (s_no_ls_lock) {
-        if (DEBUG_MODE) {
-          esp_pm_lock_acquire(s_no_ls_lock);
-        } else {
-          esp_pm_lock_release(s_no_ls_lock);
-        }
-      }
+      applyPowerPolicy(Matter.isDeviceCommissioned());
 
       blink(DEBUG_MODE ? 2 : 1);
       Serial.print("DEBUG_MODE: ");
@@ -227,9 +228,7 @@ void sensors_init() {
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000); // conservative for bring-up
 
-  if (sht4.begin()) {
-    sht4.setPrecision(SHT4X_MED_PRECISION);
-    sht4.setHeater(SHT4X_NO_HEATER);
+  if (sht4.begin(Wire)) {
     sht_ready = true;
     Serial.println("SHT4x detected");
   } else {
@@ -240,20 +239,22 @@ void sensors_init() {
 bool read_sht41(float &tempC, float &rh) {
   if (!sht_ready) return false;
 
-  sensors_event_t hum, temp;
-  if (!sht4.getEvent(&hum, &temp)) return false;
-
-  tempC = temp.temperature;
-  rh    = hum.relative_humidity;
-  return true;
+  return sht4.read(tempC, rh);
 }
 
 // -------- Sensor Update Function---------
+static uint32_t g_update_count = 0;
+static uint32_t g_fail_count = 0;
+static uint32_t g_last_update_ms = 0;
+static uint32_t g_last_update_duration_ms = 0;
+
 static void sensorUpdate() {
+  const int64_t start_us = esp_timer_get_time();
   ledOn();
   float tC, rh;
 
   if (read_sht41(tC, rh)) {
+    g_update_count++;
     g_lastTempC = tC;
     g_lastRH    = rh;
     float vbat   = readBatteryVoltsA0();
@@ -277,8 +278,16 @@ static void sensorUpdate() {
     VPRINT(bpct);
     VPRINTLN("%)");
   } else {
+    g_fail_count++;
     VPRINTLN("SHT41 sensor read failed.");
   }
+
+  g_last_update_ms = millis();
+  g_last_update_duration_ms = (uint32_t)((esp_timer_get_time() - start_us) / 1000);
+  VPRINTF("Update #%lu, duration=%lums, fail=%lu\r\n",
+          (unsigned long)g_update_count,
+          (unsigned long)g_last_update_duration_ms,
+          (unsigned long)g_fail_count);
 }
 
 // ==================================================
@@ -286,10 +295,6 @@ static void sensorUpdate() {
 // ==================================================
 
 void setup() {
-  //TESTING WAKEUP TIME
-  Serial.println(millis());
-  // END TEST
-
   pinMode(BUTTON_PIN, INPUT_PULLUP);
   pinMode(LED_PIN, OUTPUT);
   ledOff();
@@ -298,6 +303,7 @@ void setup() {
   Serial.println("\nTiny Room Sensor (headless, Matter + SHT41)");
   delay(200);
 
+  loadDebugMode();
   blink(DEBUG_MODE ? 2 : 1);   // 2 blinks = debug on, 1 blink = normal
 
   //Battery reading init
@@ -312,13 +318,8 @@ void setup() {
   HumiditySensor.begin(g_lastRH);
   esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "no_ls", &s_no_ls_lock);
 
-  // If not commissioned OR debug mode, keep the chip out of light sleep
-  loadDebugMode();
-  if (!Matter.isDeviceCommissioned() || DEBUG_MODE) {
-    esp_pm_lock_acquire(s_no_ls_lock);
-  }
   Matter.begin();
-  configureThreadIcdMode(DEBUG_MODE);
+  applyPowerPolicy(Matter.isDeviceCommissioned());
   
   // Commission if needed (info via Serial)
   if (!Matter.isDeviceCommissioned()) {
@@ -360,35 +361,37 @@ void loop() {
 
   handleBootButton();
 
-  static uint32_t commissioned_since_ms = 0;
-  const uint32_t now = millis();
+  static bool s_commissioned = false;
+  static uint32_t s_commissioned_at_ms = 0;
+  static uint32_t s_next_sample_ms = 0;
 
-  if (!Matter.isDeviceCommissioned()) {
-    commissioned_since_ms = 0;
+  const uint32_t now = millis();
+  const bool commissioned = Matter.isDeviceCommissioned();
+
+  if (commissioned != s_commissioned) {
+    s_commissioned = commissioned;
+    s_commissioned_at_ms = commissioned ? now : 0;
+    s_next_sample_ms = 0;
+    applyPowerPolicy(commissioned);
+  }
+
+  if (!commissioned) {
     vTaskDelay(pdMS_TO_TICKS(100));
     return;
   }
-
-  if (commissioned_since_ms == 0) commissioned_since_ms = now;
 
   // Commissioning grace window
-  if (now - commissioned_since_ms < 15000) {
+  if (now - s_commissioned_at_ms < COMMISSION_GRACE_MS) {
     vTaskDelay(pdMS_TO_TICKS(100));
     return;
   }
 
-  if (Matter.isDeviceCommissioned() && !DEBUG_MODE && s_no_ls_lock) {
-    esp_pm_lock_release(s_no_ls_lock);
+  const uint32_t period_ms = DEBUG_MODE ? DEBUG_UPDATE_MS : (SLEEP_SECONDS * 1000);
+  if (s_next_sample_ms == 0 || (int32_t)(now - s_next_sample_ms) >= 0) {
+    sensorUpdate();
+    s_next_sample_ms = now + period_ms;
   }
-  
-  sensorUpdate();
 
-  if (!DEBUG_MODE) {
-    idleUntilNextUpdate(SLEEP_SECONDS);
-  } else {
-    vTaskDelay(pdMS_TO_TICKS(DEBUG_UPDATE_MS));
-  }
-  //TESTING WAKUP TIME
-  Serial.println(millis());
-  //END TEST
+  const uint32_t sleep_ms = (s_next_sample_ms > now) ? (s_next_sample_ms - now) : period_ms;
+  vTaskDelay(pdMS_TO_TICKS(sleep_ms));
 }
