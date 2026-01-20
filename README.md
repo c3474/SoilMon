@@ -29,7 +29,7 @@ Xiao ESP32-C6 board-specific pin definitions:
 - **Arduino Core**: arduino‑esp32 3.3.x (as ESP‑IDF component)
 - **Matter**: esp‑matter + Arduino Matter wrappers
 - **Transport**: Thread (IEEE 802.15.4)
-- **Sensor driver**: Adafruit SHT4x - https://github.com/adafruit/Adafruit_SHT4X
+- **Sensor driver**: `SHT4xMinimal` (default) or Adafruit SHT4x via `USE_MINIMAL_SHT4X=0`
 
 ---
 
@@ -40,6 +40,7 @@ TinyENV_Sensor-Thread/
 ├── CMakeLists.txt              # Top-level CMake (ESP-IDF project entry)
 ├── sdkconfig
 ├── sdkconfig.defaults
+├── sdkconfig.defaults.lit
 ├── sdkconfig.old
 ├── dependencies.lock
 ├── partitions.csv
@@ -48,6 +49,7 @@ TinyENV_Sensor-Thread/
 │   ├── Adafruit_SHT4X/         # SHT4x temperature/humidity sensor driver
 │   ├── Adafruit_BusIO/         # Adafruit BusIO dependency
 │   ├── Adafruit_Sensor/        # Adafruit unified sensor base
+│   ├── SHT4xMinimal/           # Minimal SHT4x driver (default)
 │   └── MatterEndpoints/
 │       ├── include/
 │       │   └── MatterEndpoints/
@@ -110,6 +112,20 @@ idf.py build
 idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor
 ```
 
+LIT ICD build (long idle time):
+
+```bash
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.lit" set-target esp32c6 build
+```
+
+Expected idle draw in LIT mode: ~4 mA (measured after commissioning).
+
+Flashing without erase keeps commissioning state:
+
+```bash
+idf.py -p /dev/cu.usbmodemXXXX flash monitor
+```
+
 > ⚠️ Use `/dev/cu.*`, **not** `/dev/tty.*` on macOS.
 
 ---
@@ -131,7 +147,7 @@ BOOT button held for **>5 seconds** will decommission the node.
 
 - Sensor polling interval: **120 seconds**.
 - Updates temperature, humidity, and battery over Matter over Thread every 2 minutes.
-- Runs as a Thread **ICD sleepy end device** with a 60s poll interval and light sleep between reports.
+- Runs as a Thread **ICD sleepy end device**; timing is driven by `sdkconfig.defaults` (SIT) or `sdkconfig.defaults.lit` (LIT).
 - Designed to run unattended on battery.
 - Serial output tied to DEBUG_SERIAL bool.
 
@@ -156,7 +172,10 @@ This is a stable baseline. Future work will focus on power optimization and opti
 ## To-Do
 
 - Build current monitor jig.
-- Reduce power consumption to <10mA. (currently nearly 70mA with 1/7 build)
-- - Verify low power/sleep states are implemented.
-- - Test for and implement sleep modes.
-- Tweak polling
+- Reduce power consumption to <10mA average.
+- A/B test SHT4xMinimal vs Adafruit driver power draw.
+- Verify low power/sleep states and ICD timing behavior.
+
+## Device Identity
+
+Device strings are defined in `main/chip_project_config.h` (vendor/product name, software/hardware version strings). Numeric versions are set in `sdkconfig.defaults`.

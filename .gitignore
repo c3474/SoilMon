@@ -1,6 +1,5 @@
 .DS_Store
 build/*
 managed_components/*
-codex/
 *.lock
 *.patch

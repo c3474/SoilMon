@@ -36,6 +36,7 @@
 #include <MatterEndpoints/MatterTemperatureSensorBattery.h>
 #include "esp_openthread.h"
 #include <openthread/link.h>
+#include <openthread/thread.h>
 #include <Preferences.h>
 
 #if !CONFIG_ENABLE_CHIPOBLE
@@ -56,7 +57,7 @@ static esp_pm_lock_handle_t s_no_ls_lock = nullptr;
 
 static constexpr uint32_t SLEEP_SECONDS = 120;           // Normal refresh interval
 static constexpr uint32_t DEBUG_UPDATE_MS = 5000;        // Debug refresh interval
-static constexpr uint32_t COMMISSION_GRACE_MS = 15000;   // Allow time for initial networking
+static constexpr uint32_t COMMISSION_GRACE_MS = 60000;   // Allow time for initial networking
 static constexpr uint32_t ICD_POLL_PERIOD_MS = 60000;    // Thread SED poll interval
 static constexpr uint32_t THREAD_RX_ON_POLL_MS = 1000;   // Fast poll when not sleepy
 
@@ -129,13 +130,22 @@ static void configureThreadIcdMode(bool debug) {
     VPRINTF("Thread ICD: debug rx_on_when_idle=true, poll=%lu ms\r\n",
             static_cast<unsigned long>(THREAD_RX_ON_POLL_MS));
   } else {
-    // In normal mode, let the ICD server (sdkconfig) control poll behavior.
-    VPRINTLN("Thread ICD: normal mode (poll managed by ICD server config).");
+    // In normal mode, allow sleepy behavior and reset poll to ICD slow interval.
+    otLinkSetRxOnWhenIdle(ot, false);
+#ifdef CONFIG_ICD_SLOW_POLL_INTERVAL_MS
+    otLinkSetPollPeriod(ot, CONFIG_ICD_SLOW_POLL_INTERVAL_MS);
+#endif
+    VPRINTLN("Thread ICD: normal mode (sleepy, poll from ICD config).");
   }
 }
 
+static bool s_commissioned = false;
+static uint32_t s_commissioned_at_ms = 0;
+
 static void applyPowerPolicy(bool commissioned) {
-  const bool allow_sleep = commissioned && !DEBUG_MODE;
+  const uint32_t now = millis();
+  const bool past_grace = commissioned && (now - s_commissioned_at_ms >= COMMISSION_GRACE_MS);
+  const bool allow_sleep = commissioned && !DEBUG_MODE && past_grace;
   if (s_no_ls_lock) {
     if (allow_sleep) {
       esp_pm_lock_release(s_no_ls_lock);
@@ -144,6 +154,31 @@ static void applyPowerPolicy(bool commissioned) {
     }
   }
   configureThreadIcdMode(!allow_sleep);
+  static bool last_commissioned = false;
+  static bool last_allow_sleep = false;
+  static bool last_debug = false;
+  static bool first = true;
+  if (first || commissioned != last_commissioned || allow_sleep != last_allow_sleep || DEBUG_MODE != last_debug) {
+    Serial.printf("Power policy: commissioned=%s debug=%s allow_sleep=%s\r\n",
+                  commissioned ? "true" : "false",
+                  DEBUG_MODE ? "true" : "false",
+                  allow_sleep ? "true" : "false");
+    otInstance *ot = esp_openthread_get_instance();
+    if (ot) {
+      const otLinkModeConfig mode = otThreadGetLinkMode(ot);
+      const bool rx_on = mode.mRxOnWhenIdle;
+      const uint32_t poll_ms = otLinkGetPollPeriod(ot);
+      Serial.printf("Thread ICD state: rx_on_when_idle=%s poll=%lu ms\r\n",
+                    rx_on ? "true" : "false",
+                    static_cast<unsigned long>(poll_ms));
+    } else {
+      Serial.println("Thread ICD state: ot instance not ready");
+    }
+    last_commissioned = commissioned;
+    last_allow_sleep = allow_sleep;
+    last_debug = DEBUG_MODE;
+    first = false;
+  }
 }
 // ---------- DEBUG MODE HELPER --------
 static void loadDebugMode() {
@@ -351,10 +386,13 @@ void setup() {
   esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "no_ls", &s_no_ls_lock);
 
   Matter.begin();
-  applyPowerPolicy(Matter.isDeviceCommissioned());
+  const bool commissioned = Matter.isDeviceCommissioned();
+  s_commissioned = commissioned;
+  s_commissioned_at_ms = commissioned ? millis() : 0;
+  applyPowerPolicy(commissioned);
   
   // Commission if needed (info via Serial)
-  if (!Matter.isDeviceCommissioned()) {
+  if (!commissioned) {
     String manualCode = Matter.getManualPairingCode().c_str();
     String qrUrl      = Matter.getOnboardingQRCodeUrl().c_str();
 
@@ -393,9 +431,8 @@ void loop() {
 
   handleBootButton();
 
-  static bool s_commissioned = false;
-  static uint32_t s_commissioned_at_ms = 0;
   static uint32_t s_next_sample_ms = 0;
+  static bool s_grace_done = false;
 
   const uint32_t now = millis();
   const bool commissioned = Matter.isDeviceCommissioned();
@@ -404,6 +441,13 @@ void loop() {
     s_commissioned = commissioned;
     s_commissioned_at_ms = commissioned ? now : 0;
     s_next_sample_ms = 0;
+    s_grace_done = false;
+    applyPowerPolicy(commissioned);
+  }
+
+  if (commissioned && !s_grace_done &&
+      (now - s_commissioned_at_ms >= COMMISSION_GRACE_MS)) {
+    s_grace_done = true;
     applyPowerPolicy(commissioned);
   }
 
