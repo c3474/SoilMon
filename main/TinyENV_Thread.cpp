@@ -24,7 +24,15 @@
 #include <MatterEndPoint.h>
 #include "esp_pm.h"
 #include <Wire.h>
+#ifndef USE_MINIMAL_SHT4X
+#define USE_MINIMAL_SHT4X 1
+#endif
+
+#if USE_MINIMAL_SHT4X
 #include <SHT4xMinimal.h>
+#else
+#include <Adafruit_SHT4x.h>
+#endif
 #include <MatterEndpoints/MatterTemperatureSensorBattery.h>
 #include "esp_openthread.h"
 #include <openthread/link.h>
@@ -81,7 +89,11 @@ const char *password = "your-password";  // Change this to your WiFi password
 #endif
 
 // ---------- SHT41 Init ----------
+#if USE_MINIMAL_SHT4X
 SHT4xMinimal sht4;
+#else
+Adafruit_SHT4x sht4;
+#endif
 bool sht_ready = false;
 
 // ---------- Cached readings ----------
@@ -111,15 +123,15 @@ static void configureThreadIcdMode(bool debug) {
     return;
   }
 
-  const bool rx_on_when_idle = debug;
-  otLinkSetRxOnWhenIdle(ot, rx_on_when_idle);
-
-  const uint32_t poll_ms = debug ? THREAD_RX_ON_POLL_MS : ICD_POLL_PERIOD_MS;
-  otLinkSetPollPeriod(ot, poll_ms);
-
-  VPRINTF("Thread ICD: rx_on_when_idle=%s, poll=%lu ms\r\n",
-          rx_on_when_idle ? "true" : "false",
-          static_cast<unsigned long>(poll_ms));
+  if (debug) {
+    otLinkSetRxOnWhenIdle(ot, true);
+    otLinkSetPollPeriod(ot, THREAD_RX_ON_POLL_MS);
+    VPRINTF("Thread ICD: debug rx_on_when_idle=true, poll=%lu ms\r\n",
+            static_cast<unsigned long>(THREAD_RX_ON_POLL_MS));
+  } else {
+    // In normal mode, let the ICD server (sdkconfig) control poll behavior.
+    VPRINTLN("Thread ICD: normal mode (poll managed by ICD server config).");
+  }
 }
 
 static void applyPowerPolicy(bool commissioned) {
@@ -228,18 +240,38 @@ void sensors_init() {
   Wire.begin(SDA_PIN, SCL_PIN);
   Wire.setClock(100000); // conservative for bring-up
 
+#if USE_MINIMAL_SHT4X
   if (sht4.begin(Wire)) {
     sht_ready = true;
     Serial.println("SHT4x detected");
   } else {
     Serial.println("SHT4x not found on I2C!");
   }
+#else
+  if (sht4.begin()) {
+    sht4.setPrecision(SHT4X_HIGH_PRECISION);
+    sht4.setHeater(SHT4X_NO_HEATER);
+    sht_ready = true;
+    Serial.println("SHT4x detected");
+  } else {
+    Serial.println("SHT4x not found on I2C!");
+  }
+#endif
 }
 
 bool read_sht41(float &tempC, float &rh) {
   if (!sht_ready) return false;
 
+#if USE_MINIMAL_SHT4X
   return sht4.read(tempC, rh);
+#else
+  sensors_event_t hum, temp;
+  if (!sht4.getEvent(&hum, &temp)) return false;
+
+  tempC = temp.temperature;
+  rh    = hum.relative_humidity;
+  return true;
+#endif
 }
 
 // -------- Sensor Update Function---------

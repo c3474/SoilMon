@@ -2,6 +2,7 @@
 
 namespace {
 constexpr uint8_t kCmdMeasureHighNoHeater = 0xFD;
+constexpr uint8_t kCmdSoftReset = 0x94;
 constexpr uint32_t kMeasureDelayMs = 10;
 }
 
@@ -11,6 +12,15 @@ bool SHT4xMinimal::begin(TwoWire &wire, uint8_t address) {
 
   m_wire->beginTransmission(m_address);
   m_ready = (m_wire->endTransmission() == 0);
+  if (!m_ready) return false;
+
+  m_wire->beginTransmission(m_address);
+  m_wire->write(kCmdSoftReset);
+  if (m_wire->endTransmission() != 0) {
+    m_ready = false;
+    return false;
+  }
+  delay(2);
   return m_ready;
 }
 
@@ -40,7 +50,9 @@ bool SHT4xMinimal::read(float &tempC, float &rh) {
   const uint16_t raw_rh = (uint16_t)(buf[3] << 8) | buf[4];
 
   tempC = -45.0f + (175.0f * (float)raw_t / 65535.0f);
-  rh = 100.0f * (float)raw_rh / 65535.0f;
+  rh = -6.0f + (125.0f * (float)raw_rh / 65535.0f);
+  if (rh < 0.0f) rh = 0.0f;
+  if (rh > 100.0f) rh = 100.0f;
   return true;
 }
 
