@@ -34,3 +34,4 @@
 - Product/Vendor strings live in `main/chip_project_config.h` and are referenced by `CONFIG_CHIP_PROJECT_CONFIG`.
 - LIT commissioning requires full mDNS (`CONFIG_USE_MINIMAL_MDNS=n`); minimal mDNS blocks pairing.
 - Recent work resolved LIT commissioning and verified ~4 mA idle draw in LIT mode.
+- Low-power candidate toggles for future tests: `CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP`, `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH`, `CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP`, and PHY/BLE TX power reduction.

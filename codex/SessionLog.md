@@ -40,6 +40,7 @@ Date: 2025-09-19
 - Fixed minimal driver humidity conversion to match Adafruit (RH = -6 + 125 * raw / 65535, clamped) and added SHT4x soft reset in `components/SHT4xMinimal/src/SHT4xMinimal.cpp`.
 - LIT commissioning succeeds only when `CONFIG_USE_MINIMAL_MDNS=n` (full mDNS). Minimal mDNS blocks commissioning.
 - With LIT enabled and full mDNS, idle current draw observed around 4 mA.
+- Reviewed ESP32-C6 Kconfig low-power options; current LIT enables PM, tickless idle, 802.15.4 sleep, BLE sleep, and MAC/BB power-down. Next candidates: `CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP`, `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH`, `CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP`, and PHY/BLE TX power reduction.
 
 ## Recent Changes
 - Simplified `sdkconfig.defaults` to a minimal SIT ICD config; added `sdkconfig.defaults.lit` for LIT ICD builds.

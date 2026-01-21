@@ -179,6 +179,10 @@ This is a stable baseline. Future work will focus on power optimization and opti
 - Disable BLE after commissioning and confirm stable Thread operation.
 - Reduce sensor sampling cadence and measure average draw.
 - Minimize advertising/mDNS activity after join and retest commissioning.
+- Enable `CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP` and re-measure.
+- Enable `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH` and re-measure.
+- Tune `CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP` for faster entry to light sleep.
+- Reduce PHY/BLE TX power (`CONFIG_ESP_PHY_REDUCE_TX_POWER`, `CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM`).
 
 ## Device Identity
 
