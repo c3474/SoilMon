@@ -32,3 +32,5 @@
 ## Configuration Tips
 - ICD timing is controlled by Kconfig (SIT/LIT defaults). Debug mode still forces fast polling.
 - Product/Vendor strings live in `main/chip_project_config.h` and are referenced by `CONFIG_CHIP_PROJECT_CONFIG`.
+- LIT commissioning requires full mDNS (`CONFIG_USE_MINIMAL_MDNS=n`); minimal mDNS blocks pairing.
+- Recent work resolved LIT commissioning and verified ~4 mA idle draw in LIT mode.

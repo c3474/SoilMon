@@ -171,10 +171,14 @@ This is a stable baseline. Future work will focus on power optimization and opti
 
 ## To-Do
 
-- Build current monitor jig.
+- ~~Build current monitor jig.~~
 - Reduce power consumption to <10mA average.
 - A/B test SHT4xMinimal vs Adafruit driver power draw.
 - Verify low power/sleep states and ICD timing behavior.
+- Increase ICD slow-poll/idle intervals and measure impact.
+- Disable BLE after commissioning and confirm stable Thread operation.
+- Reduce sensor sampling cadence and measure average draw.
+- Minimize advertising/mDNS activity after join and retest commissioning.
 
 ## Device Identity
 
