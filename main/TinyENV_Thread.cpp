@@ -254,20 +254,37 @@ static inline float readBatteryVoltsA0() {
 }
 
 static inline uint8_t voltsToPct(float v) {
-  if (v >= 4.10f) return 100;   // Values above 4.10V registers as 100%
-  if (v <= 3.00f) return 0;     // Values below 3.0 register as 0%
+  // Approximate low-drain Li-Ion (3.7V nominal) discharge curve.
+  // Clamp the new ceiling/floor requested by the user.
+  if (v >= 4.14f) return 100;
+  if (v <= 3.00f) return 0;
 
-  // 3.90–4.10 -> 80–100  (ΔV=0.20, Δ%=20, slope=100 %/V)
-  if (v >= 3.90f) return (uint8_t)lroundf(80.0f + (v - 3.90f) * 100.0f);
+  struct Vp { float v; uint8_t p; };
+  static const Vp kCurve[] = {
+    {4.14f, 100},
+    {4.10f,  95},
+    {4.00f,  85},
+    {3.90f,  75},
+    {3.80f,  65},
+    {3.70f,  50},
+    {3.60f,  35},
+    {3.50f,  20},
+    {3.40f,  10},
+    {3.30f,   5},
+    {3.20f,   2},
+    {3.00f,   0},
+  };
 
-  // 3.60–3.90 -> 40–80   (ΔV=0.30, Δ%=40, slope=133.333... %/V)
-  if (v >= 3.60f) return (uint8_t)lroundf(40.0f + (v - 3.60f) * (40.0f / 0.30f));
-
-  // 3.30–3.60 -> 10–40   (ΔV=0.30, Δ%=30, slope=100 %/V)
-  if (v >= 3.30f) return (uint8_t)lroundf(10.0f + (v - 3.30f) * (30.0f / 0.30f));
-
-  // 3.00–3.30 -> 0–10    (ΔV=0.30, Δ%=10, slope=33.333... %/V)
-  return (uint8_t)lroundf((v - 3.00f) * (10.0f / 0.30f));
+  for (size_t i = 0; i + 1 < (sizeof(kCurve) / sizeof(kCurve[0])); ++i) {
+    const Vp hi = kCurve[i];
+    const Vp lo = kCurve[i + 1];
+    if (v <= hi.v && v >= lo.v) {
+      const float t = (v - lo.v) / (hi.v - lo.v);
+      const float p = lo.p + t * (hi.p - lo.p);
+      return (uint8_t)lroundf(p);
+    }
+  }
+  return 0;
 }
 
 // ---------- SHT41 ----------
