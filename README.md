@@ -40,7 +40,8 @@ TinyENV_Sensor-Thread/
 ├── CMakeLists.txt              # Top-level CMake (ESP-IDF project entry)
 ├── sdkconfig
 ├── sdkconfig.defaults
-├── sdkconfig.defaults.lit
+├── sdkconfig.defaults.debug
+├── sdkconfig.defaults.lit.old
 ├── sdkconfig.old
 ├── dependencies.lock
 ├── partitions.csv
@@ -62,7 +63,7 @@ TinyENV_Sensor-Thread/
     └── idf_component.yml
 ```
 
-`sdkconfig.defaults` is the LIT (long idle time) default. `sdkconfig.defaults.lit` is retained as a reference copy.
+`sdkconfig.defaults` is the LIT (long idle time) release default. `sdkconfig.defaults.debug` enables verbose logging.
 
 ### Custom Matter Endpoint
 
@@ -116,6 +117,12 @@ idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor
 
 Expected idle draw in LIT mode: ~4 mA (measured after commissioning).
 
+Debug build (verbose logs):
+
+```bash
+idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.debug" set-target esp32c6 build
+```
+
 Flashing without erase keeps commissioning state:
 
 ```bash
@@ -145,7 +152,7 @@ BOOT button held for **>5 seconds** will decommission the node.
 - Updates temperature, humidity, and battery over Matter over Thread every 2 minutes.
 - Runs as a Thread **ICD sleepy end device**; timing is driven by `sdkconfig.defaults` (LIT).
 - Designed to run unattended on battery.
-- Serial output tied to DEBUG_SERIAL bool.
+- Serial output and behavior tied to `VERBOSE_PRINTS` (boot button toggle).
 
 Example serial output:
 

@@ -67,9 +67,9 @@ static constexpr uint32_t ICD_MGMT_CLUSTER_ID = 0x00000046;
 static constexpr uint32_t ICD_ATTR_UAT_HINT_ID = 0x00000006;
 static constexpr uint32_t ICD_ATTR_UAT_INSTR_ID = 0x00000007;
 
-/* =========== Debug Mode Switch ======== */
+/* =========== Verbose Mode Switch ======== */
 Preferences prefs;
-bool DEBUG_MODE = true;
+bool VERBOSE_PRINTS = false;
 
 static bool pressed = false;
 static bool longpress_fired = false;
@@ -80,9 +80,9 @@ static constexpr uint32_t DEBOUNCE_MS = 60;
 static uint32_t last_toggle_ms = 0;
 static constexpr uint32_t TOGGLE_COOLDOWN_MS = 300;
 
-#define VPRINT(...)   do { if (DEBUG_MODE) Serial.print(__VA_ARGS__); } while (0)
-#define VPRINTLN(...) do { if (DEBUG_MODE) Serial.println(__VA_ARGS__); } while (0)
-#define VPRINTF(...) do { if (DEBUG_MODE) Serial.printf(__VA_ARGS__); } while (0)
+#define VPRINT(...)   do { if (VERBOSE_PRINTS) Serial.print(__VA_ARGS__); } while (0)
+#define VPRINTLN(...) do { if (VERBOSE_PRINTS) Serial.println(__VA_ARGS__); } while (0)
+#define VPRINTF(...) do { if (VERBOSE_PRINTS) Serial.printf(__VA_ARGS__); } while (0)
 
 // ----------- Matter Endpoints -------------
 MatterTemperatureSensorBattery TempSensor;      // °C (Matter spec)
@@ -177,7 +177,7 @@ static uint32_t s_commissioned_at_ms = 0;
 static void applyPowerPolicy(bool commissioned) {
   const uint32_t now = millis();
   const bool past_grace = commissioned && (now - s_commissioned_at_ms >= COMMISSION_GRACE_MS);
-  const bool allow_sleep = commissioned && !DEBUG_MODE && past_grace;
+  const bool allow_sleep = commissioned && !VERBOSE_PRINTS && past_grace;
   if (s_no_ls_lock) {
     if (allow_sleep) {
       esp_pm_lock_release(s_no_ls_lock);
@@ -190,39 +190,39 @@ static void applyPowerPolicy(bool commissioned) {
   static bool last_allow_sleep = false;
   static bool last_debug = false;
   static bool first = true;
-  if (first || commissioned != last_commissioned || allow_sleep != last_allow_sleep || DEBUG_MODE != last_debug) {
-    configureChipLogging(DEBUG_MODE);
-    Serial.printf("Power policy: commissioned=%s debug=%s allow_sleep=%s\r\n",
-                  commissioned ? "true" : "false",
-                  DEBUG_MODE ? "true" : "false",
-                  allow_sleep ? "true" : "false");
+  if (first || commissioned != last_commissioned || allow_sleep != last_allow_sleep || VERBOSE_PRINTS != last_debug) {
+    configureChipLogging(VERBOSE_PRINTS);
+    VPRINTF("Power policy: commissioned=%s verbose=%s allow_sleep=%s\r\n",
+            commissioned ? "true" : "false",
+            VERBOSE_PRINTS ? "true" : "false",
+            allow_sleep ? "true" : "false");
     otInstance *ot = esp_openthread_get_instance();
     if (ot) {
       const otLinkModeConfig mode = otThreadGetLinkMode(ot);
       const bool rx_on = mode.mRxOnWhenIdle;
       const uint32_t poll_ms = otLinkGetPollPeriod(ot);
-      Serial.printf("Thread ICD state: rx_on_when_idle=%s poll=%lu ms\r\n",
-                    rx_on ? "true" : "false",
-                    static_cast<unsigned long>(poll_ms));
+      VPRINTF("Thread ICD state: rx_on_when_idle=%s poll=%lu ms\r\n",
+              rx_on ? "true" : "false",
+              static_cast<unsigned long>(poll_ms));
     } else {
-      Serial.println("Thread ICD state: ot instance not ready");
+      VPRINTLN("Thread ICD state: ot instance not ready");
     }
     last_commissioned = commissioned;
     last_allow_sleep = allow_sleep;
-    last_debug = DEBUG_MODE;
+    last_debug = VERBOSE_PRINTS;
     first = false;
   }
 }
-// ---------- DEBUG MODE HELPER --------
+// ---------- VERBOSE MODE HELPER --------
 static void loadDebugMode() {
   prefs.begin("tinyenv", false);
-  DEBUG_MODE = prefs.getBool("debug", false);
+  VERBOSE_PRINTS = prefs.getBool("debug", false);
   prefs.end();
 }
 
 static void saveDebugMode() {
   prefs.begin("tinyenv", false);
-  prefs.putBool("debug", DEBUG_MODE);
+  prefs.putBool("debug", VERBOSE_PRINTS);
   prefs.end();
 }
 
@@ -259,13 +259,13 @@ static void handleBootButton() {
         (now - last_toggle_ms) > TOGGLE_COOLDOWN_MS) {
 
       last_toggle_ms = now;
-      DEBUG_MODE = !DEBUG_MODE;
+      VERBOSE_PRINTS = !VERBOSE_PRINTS;
       saveDebugMode();
       applyPowerPolicy(Matter.isDeviceCommissioned());
 
-      blink(DEBUG_MODE ? 2 : 1);
-      Serial.print("DEBUG_MODE: ");
-      Serial.println(DEBUG_MODE ? "ON (no sleep + verbose)" : "OFF (sleep + quiet)");
+      blink(VERBOSE_PRINTS ? 2 : 1);
+      VPRINT("VERBOSE_PRINTS: ");
+      VPRINTLN(VERBOSE_PRINTS ? "ON (no sleep + verbose)" : "OFF (sleep + quiet)");
     }
   }
 }
@@ -417,11 +417,11 @@ void setup() {
   ledOff();
 
   Serial.begin(115200);
-  Serial.println("\nTiny Room Sensor (headless, Matter + SHT41)");
+  VPRINTLN("\nTiny Room Sensor (headless, Matter + SHT41)");
   delay(200);
 
   loadDebugMode();
-  blink(DEBUG_MODE ? 2 : 1);   // 2 blinks = debug on, 1 blink = normal
+  blink(VERBOSE_PRINTS ? 2 : 1);   // 2 blinks = verbose on, 1 blink = normal
 
   //Battery reading init
   pinMode(VBAT_ADC_PIN, ANALOG);
@@ -440,7 +440,7 @@ void setup() {
   const bool commissioned = Matter.isDeviceCommissioned();
   s_commissioned = commissioned;
   s_commissioned_at_ms = commissioned ? millis() : 0;
-  configureChipLogging(DEBUG_MODE);
+  configureChipLogging(VERBOSE_PRINTS);
   configureIcdManagementAttributes();
   applyPowerPolicy(commissioned);
   
@@ -515,7 +515,7 @@ void loop() {
     return;
   }
 
-  const uint32_t period_ms = DEBUG_MODE ? DEBUG_UPDATE_MS : (SLEEP_SECONDS * 1000);
+  const uint32_t period_ms = VERBOSE_PRINTS ? DEBUG_UPDATE_MS : (SLEEP_SECONDS * 1000);
   if (s_next_sample_ms == 0 || (int32_t)(now - s_next_sample_ms) >= 0) {
     sensorUpdate();
     s_next_sample_ms = now + period_ms;
