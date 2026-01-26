@@ -21,6 +21,7 @@
 #include <Matter.h>
 #include "MatterEndpoints/MatterTemperatureSensorBattery.h"
 #include <esp_matter_cluster.h>
+#include <esp_matter_core.h>
 #include <cstring>
 
 using namespace esp_matter;
@@ -98,23 +99,31 @@ bool MatterTemperatureSensorBattery::begin(int16_t _rawTemperature) {
 
     namespace ps_attr = esp_matter::cluster::power_source::attribute;
 
-    ps_attr::create_bat_present(ps_cluster, true);
+    if (!attribute::get(ps_cluster, PowerSource::Attributes::BatPresent::Id)) {
+      ps_attr::create_bat_present(ps_cluster, true);
+    }
 
-    ps_attr::create_bat_percent_remaining(
-        ps_cluster,
-        ::nullable((uint8_t)200),
-        ::nullable((uint8_t)0),
-        ::nullable((uint8_t)200)
-    );
+    if (!attribute::get(ps_cluster, PowerSource::Attributes::BatPercentRemaining::Id)) {
+      ps_attr::create_bat_percent_remaining(
+          ps_cluster,
+          ::nullable((uint8_t)200),
+          ::nullable((uint8_t)0),
+          ::nullable((uint8_t)200)
+      );
+    }
 
-    ps_attr::create_bat_voltage(
-        ps_cluster,
-        ::nullable((uint32_t)3854),
-        ::nullable((uint32_t)2500),
-        ::nullable((uint32_t)5000)
-    );
+    if (!attribute::get(ps_cluster, PowerSource::Attributes::BatVoltage::Id)) {
+      ps_attr::create_bat_voltage(
+          ps_cluster,
+          ::nullable((uint32_t)3854),
+          ::nullable((uint32_t)2500),
+          ::nullable((uint32_t)5000)
+      );
+    }
 
-    ps_attr::create_bat_charge_state(ps_cluster, 0);
+    if (!attribute::get(ps_cluster, PowerSource::Attributes::BatChargeState::Id)) {
+      ps_attr::create_bat_charge_state(ps_cluster, 0);
+    }
   }
 }
 

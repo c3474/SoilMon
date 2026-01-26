@@ -62,6 +62,8 @@ TinyENV_Sensor-Thread/
     └── idf_component.yml
 ```
 
+`sdkconfig.defaults` is the LIT (long idle time) default. `sdkconfig.defaults.lit` is retained as a reference copy.
+
 ### Custom Matter Endpoint
 
 A custom endpoint (`MatterTemperatureSensorBattery`) extends the standard Matter temperature sensor to also expose **battery voltage and percentage**. This is a local shim, not a published library.
@@ -112,12 +114,6 @@ idf.py build
 idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor
 ```
 
-LIT ICD build (long idle time):
-
-```bash
-idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.lit" set-target esp32c6 build
-```
-
 Expected idle draw in LIT mode: ~4 mA (measured after commissioning).
 
 Flashing without erase keeps commissioning state:
@@ -147,7 +143,7 @@ BOOT button held for **>5 seconds** will decommission the node.
 
 - Sensor polling interval: **120 seconds**.
 - Updates temperature, humidity, and battery over Matter over Thread every 2 minutes.
-- Runs as a Thread **ICD sleepy end device**; timing is driven by `sdkconfig.defaults` (SIT) or `sdkconfig.defaults.lit` (LIT).
+- Runs as a Thread **ICD sleepy end device**; timing is driven by `sdkconfig.defaults` (LIT).
 - Designed to run unattended on battery.
 - Serial output tied to DEBUG_SERIAL bool.
 

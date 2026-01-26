@@ -1,5 +1,14 @@
 # Session Log
 
+## 2026-01-26
+- Switched defaults to LIT: copied `sdkconfig.defaults.lit` → `sdkconfig.defaults`, archived `sdkconfig.defaults.lit` as `sdkconfig.defaults.lit.old`.
+- Enabled ICD CIP + UAT and set ICD UAT hint/instruction attributes for cluster 0x0046; added CHIP log filter control tied to DEBUG_MODE.
+- Battery percent curve updated to low‑drain Li‑ion mapping (4.14V=100%, 3.00V=0%).
+- CHIP logs: enabled filtering, set default level to PROGRESS; global log level set to INFO; console set to USB‑Serial/JTAG.
+- Fixed ADC warning by initializing ADC channel before setting attenuation; removed `adcAttachPin` usage.
+- Removed PowerSource attribute duplicate warnings by guarding attribute creation.
+- Build verified after changes.
+
 Date: 2025-09-19
 
 ## Summary

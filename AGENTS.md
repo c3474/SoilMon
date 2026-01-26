@@ -3,7 +3,7 @@
 ## Project Structure & Module Organization
 - `main/` contains the application entry (`main/TinyENV_Thread.cpp`) and project-specific headers.
 - `components/` holds local components (e.g., `MatterEndpoints/`, `SHT4xMinimal/`, Adafruit drivers).
-- `sdkconfig.defaults` is the minimal **SIT** ICD defaults; `sdkconfig.defaults.lit` is the **LIT** ICD variant.
+- `sdkconfig.defaults` is the **LIT** ICD default; `sdkconfig.defaults.lit` is a reference copy.
 - `partitions.csv` defines the custom partition layout (offset `0xC000`).
 - `codex/SessionLog.md` records session changes and decisions (ignored by git).
   - Quick note: this is the canonical session history location.
@@ -11,7 +11,7 @@
 ## Build, Test, and Development Commands
 - `idf.py fullclean` — reset build artifacts and managed components (use after config changes).
 - `idf.py build` — build with SIT defaults.
-- `idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.lit" set-target esp32c6 build` — build with LIT defaults.
+- `idf.py build` — build with the LIT defaults.
 - `idf.py -p /dev/cu.usbmodemXXXX flash monitor` — flash without erasing NVS (keeps commissioning).
 - `idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor` — clean flash (resets commissioning).
 
@@ -27,10 +27,10 @@
 
 ## Commit & Pull Request Guidelines
 - Commit messages are short, imperative summaries (e.g., “ICD config cleanup and defaults split”).
-- PRs should include: purpose, config used (SIT/LIT), flash method (erase or not), and any power/commissioning observations.
+- PRs should include: purpose, flash method (erase or not), and any power/commissioning observations.
 
 ## Configuration Tips
-- ICD timing is controlled by Kconfig (SIT/LIT defaults). Debug mode still forces fast polling.
+- ICD timing is controlled by Kconfig (LIT defaults). Debug mode still forces fast polling.
 - Product/Vendor strings live in `main/chip_project_config.h` and are referenced by `CONFIG_CHIP_PROJECT_CONFIG`.
 - LIT commissioning requires full mDNS (`CONFIG_USE_MINIMAL_MDNS=n`); minimal mDNS blocks pairing.
 - Recent work resolved LIT commissioning and verified ~4 mA idle draw in LIT mode.

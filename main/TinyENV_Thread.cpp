@@ -38,6 +38,9 @@
 #include <openthread/link.h>
 #include <openthread/thread.h>
 #include <Preferences.h>
+#include <cstring>
+#include <esp_matter_attribute_utils.h>
+#include <lib/support/logging/CHIPLogging.h>
 
 #if !CONFIG_ENABLE_CHIPOBLE
   #include <WiFi.h>
@@ -60,10 +63,13 @@ static constexpr uint32_t DEBUG_UPDATE_MS = 5000;        // Debug refresh interv
 static constexpr uint32_t COMMISSION_GRACE_MS = 60000;   // Allow time for initial networking
 static constexpr uint32_t ICD_POLL_PERIOD_MS = 60000;    // Thread SED poll interval
 static constexpr uint32_t THREAD_RX_ON_POLL_MS = 1000;   // Fast poll when not sleepy
+static constexpr uint32_t ICD_MGMT_CLUSTER_ID = 0x00000046;
+static constexpr uint32_t ICD_ATTR_UAT_HINT_ID = 0x00000006;
+static constexpr uint32_t ICD_ATTR_UAT_INSTR_ID = 0x00000007;
 
 /* =========== Debug Mode Switch ======== */
 Preferences prefs;
-bool DEBUG_MODE = false;
+bool DEBUG_MODE = true;
 
 static bool pressed = false;
 static bool longpress_fired = false;
@@ -139,6 +145,32 @@ static void configureThreadIcdMode(bool debug) {
   }
 }
 
+static void configureChipLogging(bool verbose) {
+  chip::Logging::SetLogFilter(verbose ? chip::Logging::kLogCategory_Detail
+                                      : chip::Logging::kLogCategory_Error);
+}
+
+static void configureIcdManagementAttributes() {
+#if CONFIG_ENABLE_ICD_SERVER && CONFIG_ENABLE_ICD_USER_ACTIVE_MODE_TRIGGER
+  const uint32_t uat_hint = (1u << 0) | (1u << 8); // power cycle + reset/boot button
+  esp_matter_attr_val_t hint = esp_matter_bitmap32(uat_hint);
+  esp_err_t err = esp_matter::attribute::update(
+      0, ICD_MGMT_CLUSTER_ID, ICD_ATTR_UAT_HINT_ID, &hint);
+  if (err != ESP_OK) {
+    VPRINTF("ICD UAT hint update failed: %d\r\n", err);
+  }
+
+  static char instruction[] = "Press BOOT to wake";
+  esp_matter_attr_val_t instr = esp_matter_char_str(
+      instruction, static_cast<uint16_t>(strlen(instruction)));
+  err = esp_matter::attribute::update(
+      0, ICD_MGMT_CLUSTER_ID, ICD_ATTR_UAT_INSTR_ID, &instr);
+  if (err != ESP_OK) {
+    VPRINTF("ICD UAT instruction update failed: %d\r\n", err);
+  }
+#endif
+}
+
 static bool s_commissioned = false;
 static uint32_t s_commissioned_at_ms = 0;
 
@@ -159,6 +191,7 @@ static void applyPowerPolicy(bool commissioned) {
   static bool last_debug = false;
   static bool first = true;
   if (first || commissioned != last_commissioned || allow_sleep != last_allow_sleep || DEBUG_MODE != last_debug) {
+    configureChipLogging(DEBUG_MODE);
     Serial.printf("Power policy: commissioned=%s debug=%s allow_sleep=%s\r\n",
                   commissioned ? "true" : "false",
                   DEBUG_MODE ? "true" : "false",
@@ -393,6 +426,7 @@ void setup() {
   //Battery reading init
   pinMode(VBAT_ADC_PIN, ANALOG);
   analogReadResolution(12);
+  (void)analogReadMilliVolts(VBAT_ADC_PIN); // ensure ADC channel is initialized
   analogSetPinAttenuation(VBAT_ADC_PIN, ADC_11db);
 
   sensors_init();
@@ -406,6 +440,8 @@ void setup() {
   const bool commissioned = Matter.isDeviceCommissioned();
   s_commissioned = commissioned;
   s_commissioned_at_ms = commissioned ? millis() : 0;
+  configureChipLogging(DEBUG_MODE);
+  configureIcdManagementAttributes();
   applyPowerPolicy(commissioned);
   
   // Commission if needed (info via Serial)
