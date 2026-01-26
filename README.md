@@ -174,18 +174,20 @@ This is a stable baseline. Future work will focus on power optimization and opti
 
 ## To-Do
 
-- ~~Build current monitor jig.~~
-- Reduce power consumption to <10mA average.
-- A/B test SHT4xMinimal vs Adafruit driver power draw.
-- Verify low power/sleep states and ICD timing behavior.
-- Increase ICD slow-poll/idle intervals and measure impact.
-- Disable BLE after commissioning and confirm stable Thread operation.
-- Reduce sensor sampling cadence and measure average draw.
-- Minimize advertising/mDNS activity after join and retest commissioning.
-- Enable `CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP` and re-measure.
-- Enable `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH` and re-measure.
-- Tune `CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP` for faster entry to light sleep.
-- Reduce PHY/BLE TX power (`CONFIG_ESP_PHY_REDUCE_TX_POWER`, `CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM`).
+- [x] Build current monitor jig.
+- [x] Reduce power consumption to <10mA average.
+- [x] A/B test SHT4xMinimal vs Adafruit driver power draw.
+- [ ] Verify low power/sleep states and ICD timing behavior.
+- [ ] Increase ICD slow-poll/idle intervals and measure impact.
+- [ ] Disable BLE after commissioning and confirm stable Thread operation.
+- [ ] Reduce sensor sampling cadence and measure average draw.
+- [ ] Minimize advertising/mDNS activity after join and retest commissioning.
+- [x] Enable `CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP` and re-measure.
+- [ ] Enable `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH` and re-measure.
+- [ ] Drive unused/external GPIOs to a defined state (or hold) during sleep and re-measure.
+- [ ] Evaluate GPIO pull-ups/downs on unused pins to reduce leakage.
+- [ ] Tune `CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP` for faster entry to light sleep.
+- [ ] Reduce PHY/BLE TX power (`CONFIG_ESP_PHY_REDUCE_TX_POWER`, `CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM`).
 
 ## Device Identity
 
