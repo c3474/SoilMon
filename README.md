@@ -1,194 +1,109 @@
-# TinyENV Sensor – Matter over Thread (ESP32‑C6)
+# Garden Sensor
 
-A headless, battery‑powered temperature & humidity sensor built on **Seeed XIAO ESP32‑C6**, using **Matter over Thread**. Works with **Home Assistant** and **Apple Home**.
+Battery-powered outdoor soil and air sensor using **Matter over Thread**. Appears natively in **Apple Home** via a HomePod 2 Thread Border Router. No Wi-Fi required.
 
-This project is intentionally minimal: no screen, no buttons beyond BOOT for decommissioning, and no OTA (for now). The goal is a stable, low‑power environmental sensor using a modern Matter/Thread stack.
+## Sensors
 
----
+| Measurement | Source | Apple Home label |
+|---|---|---|
+| Air temperature | BME280 (I²C) | Temperature |
+| Air humidity | BME280 (I²C) | Humidity |
+| Air pressure | BME280 (I²C) | — |
+| Soil temperature | DS18B20 (1-Wire) | Soil Temperature |
+| Soil moisture | Capacitive probe (ADC) | Soil Moisture |
+| Battery level | 18650 via divider (ADC) | Battery |
 
 ## Hardware
 
-- **MCU**: Seeed XIAO ESP32‑C6
-- **Sensor**: Sensirion SHT41 (I²C)
-- **Power**: Supports Battery or USB
-- **Battery sense**: A0 via 1:2 divider (220,000Ω, offset calibrated in firmware to 1.0123)
+| Part | Notes |
+|---|---|
+| Seeed XIAO ESP32-C6 | MCU + 802.15.4 Thread radio |
+| GY-BME280 3.3V breakout | Must be 3.3V variant |
+| DIYables capacitive soil sensor v1.2 | Analog output |
+| DS18B20 waterproof probe | 1-Wire, 4.7kΩ pull-up to 3.3V |
+| 2N7000 / BS170 N-channel MOSFET | Cuts sensor power during sleep |
+| 18650 cell + TP4056 with protection | Solar-chargeable power |
+| 6V 1–2W solar panel + 1N5819 diode | Oregon-sized for spring–fall |
 
-Xiao ESP32-C6 board-specific pin definitions:
+### Wiring
 
-```cpp
-#define SDA_PIN 22
-#define SCL_PIN 23
-#define VBAT_ADC_PIN A0
+```
+XIAO ESP32-C6
+├── GPIO0  → BME280 SDA
+├── GPIO1  → BME280 SCL
+├── GPIO2  → DS18B20 data + 4.7kΩ pull-up to 3.3V
+├── GPIO3  ← Soil sensor AOUT
+├── GPIO4  → MOSFET gate (powers soil sensor + DS18B20)
+├── A0     ← Battery voltage (1:2 divider)
+├── 3.3V   → BME280 VCC, MOSFET drain rail
+└── GND    → all sensor GNDs
 ```
 
----
+## Flashing
 
-## Software Stack
+### Web flasher (Chrome/Edge only)
 
-- **ESP‑IDF**: v5.5.x
-- **Arduino Core**: arduino‑esp32 3.3.x (as ESP‑IDF component)
-- **Matter**: esp‑matter + Arduino Matter wrappers
-- **Transport**: Thread (IEEE 802.15.4)
-- **Sensor driver**: `SHT4xMinimal` (default) or Adafruit SHT4x via `USE_MINIMAL_SHT4X=0`
+Visit the GitHub Pages URL for this repo and click **Install**.
 
----
-
-## Project Structure (important bits)
-
-```text
-TinyENV_Sensor-Thread/
-├── CMakeLists.txt              # Top-level CMake (ESP-IDF project entry)
-├── sdkconfig
-├── sdkconfig.defaults
-├── sdkconfig.defaults.debug
-├── sdkconfig.defaults.lit.old
-├── sdkconfig.old
-├── dependencies.lock
-├── partitions.csv
-├── README.md
-├── components/
-│   ├── Adafruit_SHT4X/         # SHT4x temperature/humidity sensor driver
-│   ├── Adafruit_BusIO/         # Adafruit BusIO dependency
-│   ├── Adafruit_Sensor/        # Adafruit unified sensor base
-│   ├── SHT4xMinimal/           # Minimal SHT4x driver (default)
-│   └── MatterEndpoints/
-│       ├── include/
-│       │   └── MatterEndpoints/
-│       │       └── MatterTemperatureSensorBattery.h
-│       ├── MatterTemperatureSensorBattery.cpp
-│       └── CMakeLists.txt
-└── main/
-    ├── TinyENV_Thread.cpp      # Main application entry point
-    ├── CMakeLists.txt
-    └── idf_component.yml
-```
-
-`sdkconfig.defaults` is the LIT (long idle time) release default. `sdkconfig.defaults.debug` enables verbose logging.
-
-### Custom Matter Endpoint
-
-A custom endpoint (`MatterTemperatureSensorBattery`) extends the standard Matter temperature sensor to also expose **battery voltage and percentage**. This is a local shim, not a published library.
-
----
-
-## What Changed From the Original Example
-
-- Replaced example **Color Light** with:
-  - Temperature Sensor cluster
-  - Humidity Sensor cluster
-  - Battery reporting
-- Switched transport to **Matter over Thread** (no Wi‑Fi required at runtime)
-- Explicit USB CDC configuration so `Serial.print()` works reliably
-- Explicit I²C pin configuration for XIAO ESP32‑C6
-- Headless commissioning (QR + manual code via serial)
-- Added power‑saving features (CPU scaling + light sleep)
-
----
-
-## One‑Time ESP‑IDF Setup
-
-Clone ESP‑IDF and install tools (once per machine):
+### USB (development)
 
 ```bash
-git clone -b v5.5 https://github.com/espressif/esp-idf.git ~/esp-idf
-cd ~/esp-idf
-./install.sh
+cd /Users/Shared/SoilMon
+export PATH="/opt/homebrew/bin:$PATH"
+source esp-idf/export.sh
+source esp-matter/export.sh
+cd garden-sensor
+idf.py -p /dev/cu.usbmodem* flash monitor
 ```
 
-Add a shell alias (recommended):
-
-```bash
-alias espidf-init='. $HOME/esp-idf/export.sh'
-```
-
----
-
-## Build & Flash Instructions
-
-From the project root:
-
-```bash
-espidf-init
-idf.py set-target esp32c6
-idf.py fullclean
-idf.py build
-idf.py -p /dev/cu.usbmodemXXXX erase-flash flash monitor
-```
-
-Expected idle draw in LIT mode: ~4 mA (measured after commissioning).
-
-Debug build (verbose logs):
-
-```bash
-idf.py -D SDKCONFIG_DEFAULTS="sdkconfig.defaults.debug" set-target esp32c6 build
-```
-
-Flashing without erase keeps commissioning state:
-
-```bash
-idf.py -p /dev/cu.usbmodemXXXX flash monitor
-```
-
-> ⚠️ Use `/dev/cu.*`, **not** `/dev/tty.*` on macOS.
-
----
+> Use `/dev/cu.*` not `/dev/tty.*` on macOS.
 
 ## Commissioning
 
-On first boot (or after erase/decommission), the device prints:
+On first boot the device prints a pairing code and QR URL to the serial monitor:
 
-- Manual pairing code
-- QR code URL
+1. Open **Apple Home → Add Accessory → More Options**
+2. Scan the QR code or enter the manual pairing code
+3. HomePod 2 commissions the device onto the Thread network
 
-Use either **Home Assistant** or **Apple Home** to commission. The same firmware works in both ecosystems.
+**Boot button:**
+- Short press → toggle verbose logging (2 blinks = on, 1 blink = off)
+- Hold 5 s → decommission
 
-BOOT button held for **>5 seconds** will decommission the node.
+## Soil Moisture Calibration
 
----
+After hardware arrives, calibrate the two constants at the top of [main/TinyENV_Thread.cpp](main/TinyENV_Thread.cpp):
 
-## Runtime Behavior
-
-- Sensor polling interval: **120 seconds**.
-- Updates temperature, humidity, and battery over Matter over Thread every 2 minutes.
-- Runs as a Thread **ICD sleepy end device**; timing is driven by `sdkconfig.defaults` (LIT).
-- Designed to run unattended on battery.
-- Serial output and behavior tied to `VERBOSE_PRINTS` (boot button toggle).
-
-Example serial output:
-
-```text
-Updated: 72.8 F, 55 %RH, VBAT: 4.12V (93%)
+```cpp
+static const int SOIL_DRY_RAW = 2800;  // ADC reading with sensor in dry air
+static const int SOIL_WET_RAW = 1200;  // ADC reading with sensor submerged
 ```
 
----
+1. Power on, open serial monitor, enable verbose mode (short press boot button)
+2. Hold the sensor in dry air — note the `Soil ADC raw avg:` value → set `SOIL_DRY_RAW`
+3. Submerge the sensor tip in water — note the value → set `SOIL_WET_RAW`
+4. Reflash
 
+## Power Budget
 
-## Status
+| State | Current |
+|---|---|
+| ICD LIT idle (Thread keepalive) | ~4 mA |
+| Active read + transmit | ~60 mA |
+| **Effective average** | **~4.5 mA** |
 
-✅ Builds cleanly on ESP‑IDF 5.5.x.
-✅ Works with Home Assistant.
-✅ Works with Apple Home.
-✅ Matter over Thread confirmed working.
+18650 @ 2500 mAh ÷ 4.5 mA ≈ 23 days on battery alone. A 2W panel in Oregon offsets the draw spring through fall.
 
-This is a stable baseline. Future work will focus on power optimization and optional sensor expansion.
+## Toolchain
 
-## To-Do
+| Component | Version |
+|---|---|
+| ESP-IDF | v5.4.1 |
+| esp-matter | latest main |
+| arduino-esp32 | 3.3.5 (managed component) |
 
-- [x] Build current monitor jig.
-- [x] Reduce power consumption to <10mA average.
-- [x] A/B test SHT4xMinimal vs Adafruit driver power draw.
-- [ ] Verify low power/sleep states and ICD timing behavior.
-- [ ] Increase ICD slow-poll/idle intervals and measure impact.
-- [ ] Disable BLE after commissioning and confirm stable Thread operation.
-- [ ] Reduce sensor sampling cadence and measure average draw.
-- [ ] Minimize advertising/mDNS activity after join and retest commissioning.
-- [x] Enable `CONFIG_PM_POWER_DOWN_CPU_IN_LIGHT_SLEEP` and re-measure.
-- [ ] Enable `CONFIG_ESP_SLEEP_POWER_DOWN_FLASH` and re-measure.
-- [ ] Drive unused/external GPIOs to a defined state (or hold) during sleep and re-measure.
-- [ ] Evaluate GPIO pull-ups/downs on unused pins to reduce leakage.
-- [ ] Tune `CONFIG_FREERTOS_IDLE_TIME_BEFORE_SLEEP` for faster entry to light sleep.
-- [ ] Reduce PHY/BLE TX power (`CONFIG_ESP_PHY_REDUCE_TX_POWER`, `CONFIG_BT_LE_DFT_TX_POWER_LEVEL_DBM`).
+See [garden-sensor-handoff.md](../garden-sensor-handoff.md) for full toolchain setup instructions.
 
-## Device Identity
+## CI
 
-Device strings are defined in `main/chip_project_config.h` (vendor/product name, software/hardware version strings). Numeric versions are set in `sdkconfig.defaults`.
+GitHub Actions builds the firmware on every push to `main` and deploys the web flasher to GitHub Pages. First build takes 30–60 min (connectedhomeip cold compile); subsequent builds with cache are ~10–15 min.
