@@ -27,6 +27,8 @@ Battery-powered outdoor soil and air sensor using **Matter over Thread**. Appear
 
 ### Wiring
 
+See [docs/wiring.svg](docs/wiring.svg) for a full component diagram including solar panel, TP4056, 18650, MOSFET, and all sensors.
+
 ```
 XIAO ESP32-C6
 ├── GPIO0  → BME280 SDA
@@ -72,7 +74,9 @@ On first boot the device prints a pairing code and QR URL to the serial monitor:
 
 ## Soil Moisture Calibration
 
-After hardware arrives, calibrate the two constants at the top of [main/TinyENV_Thread.cpp](main/TinyENV_Thread.cpp):
+See [docs/calibration.md](docs/calibration.md) for the full step-by-step calibration guide including expected ADC ranges, Apple Home verification, and troubleshooting.
+
+Quick reference — update these constants at the top of [main/TinyENV_Thread.cpp](main/TinyENV_Thread.cpp):
 
 ```cpp
 static const int SOIL_DRY_RAW = 2800;  // ADC reading with sensor in dry air
