@@ -1,0 +1,88 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Garden Sensor Flasher</title>
+  <script type="module" src="https://unpkg.com/esp-web-tools@10/dist/web/install-button.js"></script>
+  <style>
+    body {
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      max-width: 540px;
+      margin: 60px auto;
+      padding: 0 20px;
+      color: #1a1a1a;
+      background: #f9f9f9;
+    }
+    h1 { font-size: 1.6rem; margin-bottom: 4px; }
+    .subtitle { color: #666; margin-top: 0; margin-bottom: 32px; font-size: 0.95rem; }
+    .card {
+      background: #fff;
+      border: 1px solid #e0e0e0;
+      border-radius: 10px;
+      padding: 24px;
+      margin-bottom: 20px;
+    }
+    .card h2 { font-size: 1rem; margin: 0 0 12px; color: #333; }
+    ol { padding-left: 20px; line-height: 1.8; margin: 0; }
+    esp-web-install-button {
+      display: block;
+      margin-top: 24px;
+    }
+    .warning {
+      background: #fff8e1;
+      border-left: 4px solid #f9a825;
+      padding: 10px 14px;
+      border-radius: 4px;
+      font-size: 0.9rem;
+      margin-top: 16px;
+    }
+    .sensors {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 8px;
+      margin-top: 10px;
+      font-size: 0.88rem;
+      color: #444;
+    }
+    .sensor-item::before { content: "• "; color: #4caf50; }
+  </style>
+</head>
+<body>
+
+  <h1>Garden Sensor</h1>
+  <p class="subtitle">Matter over Thread · XIAO ESP32-C6</p>
+
+  <div class="card">
+    <h2>What this installs</h2>
+    <div class="sensors">
+      <span class="sensor-item">Air temperature</span>
+      <span class="sensor-item">Air humidity</span>
+      <span class="sensor-item">Air pressure</span>
+      <span class="sensor-item">Soil temperature</span>
+      <span class="sensor-item">Soil moisture</span>
+      <span class="sensor-item">Battery level</span>
+    </div>
+  </div>
+
+  <div class="card">
+    <h2>Before you flash</h2>
+    <ol>
+      <li>Connect your XIAO ESP32-C6 via USB-C</li>
+      <li>Click <strong>Install</strong> below</li>
+      <li>Select the correct COM / serial port</li>
+      <li>Wait for flashing to complete (~30 s)</li>
+      <li>Open <strong>Apple Home → Add Accessory → More Options</strong></li>
+      <li>Scan the QR code or enter the pairing code shown on the serial monitor</li>
+    </ol>
+
+    <esp-web-install-button manifest="./manifest.json"></esp-web-install-button>
+
+    <div class="warning">
+      <strong>Chrome or Edge required.</strong>
+      ESP Web Tools uses the Web Serial API, which is not supported in Safari or Firefox.
+    </div>
+  </div>
+
+</body>
+</html>

@@ -1,39 +1,39 @@
-// Copyright 2025 Espressif Systems (Shanghai) PTE LTD
-//
-// Licensed under the Apache License, Version 2.0 (the "License");
-// you may not use this file except in compliance with the License.
-// You may obtain a copy of the License at
-
-//     http://www.apache.org/licenses/LICENSE-2.0
-//
-// Unless required by applicable law or agreed to in writing, software
-// distributed under the License is distributed on an "AS IS" BASIS,
-// WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-// See the License for the specific language governing permissions and
-// limitations under the License.
-
 // ====================================================================== //
-// * - Tiny Room Sensor (XIAO ESP32-C6) - Headless
-// * - Matter over Thread (Temp + Humidity via SHT41)
-// * - Commissioning info via Serial
-// * - Hold Boot Button for ~5s to decommission
-// * - Optimized for battery power and low current draw
-// ====================================================================== // 
+// Garden Sensor (XIAO ESP32-C6) — Matter over Thread
+//
+// Sensors:
+//   - BME280:           Air temperature, humidity, pressure (I2C)
+//   - DS18B20:          Soil temperature (1-Wire, GPIO2)
+//   - Capacitive probe: Soil moisture (ADC, GPIO3)
+//
+// Power:
+//   - 18650 + solar via TP4056
+//   - MOSFET gate (GPIO4) cuts power to soil sensor + DS18B20 between reads
+//   - ICD LIT sleepy end device; 120s poll interval
+//
+// Matter endpoints:
+//   1 - Temperature Measurement  (air,  BME280)
+//   2 - Relative Humidity        (air,  BME280)
+//   3 - Pressure Measurement     (air,  BME280)
+//   4 - Temperature Measurement  (soil, DS18B20)   "Soil Temperature"
+//   5 - Relative Humidity        (soil moisture, capacitive) "Soil Moisture"
+//   + Power Source cluster (battery) on endpoint 1
+//
+// Commissioning: BLE for 15 min after power-on; pairing code via Serial.
+// Boot button:   short press = toggle verbose, long press (5s) = decommission.
+// ====================================================================== //
 
 #include <Matter.h>
 #include <MatterEndPoint.h>
+#include <MatterEndpoints/MatterPressureSensor.h>
+#include <MatterEndpoints/MatterTemperatureSensor.h>
+#include <MatterEndpoints/MatterHumiditySensor.h>
+#include "MatterEndpoints/MatterTemperatureSensorBattery.h"
 #include "esp_pm.h"
 #include <Wire.h>
-#ifndef USE_MINIMAL_SHT4X
-#define USE_MINIMAL_SHT4X 1
-#endif
-
-#if USE_MINIMAL_SHT4X
-#include <SHT4xMinimal.h>
-#else
-#include <Adafruit_SHT4x.h>
-#endif
-#include <MatterEndpoints/MatterTemperatureSensorBattery.h>
+#include <Adafruit_BME280.h>
+#include <DallasTemperature.h>
+#include <OneWire.h>
 #include "esp_openthread.h"
 #include <openthread/link.h>
 #include <openthread/thread.h>
@@ -41,107 +41,106 @@
 #include <cstring>
 #include <esp_matter_attribute_utils.h>
 #include <lib/support/logging/CHIPLogging.h>
+#include "esp_adc/adc_oneshot.h"
 
 #if !CONFIG_ENABLE_CHIPOBLE
   #include <WiFi.h>
 #endif
 
-// ------------ Board Pin Defs -----------------
-#define SDA_PIN 22
-#define SCL_PIN 23
-#define VBAT_ADC_PIN A0   // GPIO0 (XIAO ESP32-C6 A0)
-#define LED_PIN 15
+// ==================== Pin Definitions ====================
+#define SDA_PIN          0      // BME280 SDA
+#define SCL_PIN          1      // BME280 SCL
+#define ONE_WIRE_PIN     2      // DS18B20 data + 4.7kΩ pull-up to 3.3V
+#define SOIL_ADC_PIN     3      // Capacitive soil sensor AOUT
+#define SENSOR_PWR_PIN   4      // MOSFET gate: HIGH = sensors powered
+#define VBAT_ADC_PIN     A0     // Battery voltage (1:2 divider)
+#define LED_PIN          15
 const uint8_t BUTTON_PIN = BOOT_PIN;
-//Forward Declarations
-static void blink(uint8_t n);
 
-/* ========= ESP Sleep Helpers ========= */
-static esp_pm_lock_handle_t s_no_ls_lock = nullptr;
+// ==================== Soil Moisture Calibration ====================
+// Adjust after calibration with your specific sensor and soil.
+static const int SOIL_DRY_RAW = 2800;   // ADC reading in dry air
+static const int SOIL_WET_RAW = 1200;   // ADC reading fully submerged
 
-static constexpr uint32_t SLEEP_SECONDS = 120;           // Normal refresh interval
-static constexpr uint32_t DEBUG_UPDATE_MS = 5000;        // Debug refresh interval
-static constexpr uint32_t COMMISSION_GRACE_MS = 60000;   // Allow time for initial networking
-static constexpr uint32_t ICD_POLL_PERIOD_MS = 60000;    // Thread SED poll interval
-static constexpr uint32_t THREAD_RX_ON_POLL_MS = 1000;   // Fast poll when not sleepy
-static constexpr uint32_t ICD_MGMT_CLUSTER_ID = 0x00000046;
+// ==================== Timing ====================
+static constexpr uint32_t SLEEP_SECONDS        = 120;
+static constexpr uint32_t DEBUG_UPDATE_MS      = 5000;
+static constexpr uint32_t COMMISSION_GRACE_MS  = 60000;
+static constexpr uint32_t ICD_POLL_PERIOD_MS   = 60000;
+static constexpr uint32_t THREAD_RX_ON_POLL_MS = 1000;
+static constexpr uint32_t MOSFET_STABILISE_MS  = 50;    // wait after powering sensors
+static constexpr uint32_t DS18B20_CONVERT_MS   = 750;   // 12-bit conversion time
+
+// ==================== ICD cluster IDs ====================
+static constexpr uint32_t ICD_MGMT_CLUSTER_ID  = 0x00000046;
 static constexpr uint32_t ICD_ATTR_UAT_HINT_ID = 0x00000006;
-static constexpr uint32_t ICD_ATTR_UAT_INSTR_ID = 0x00000007;
+static constexpr uint32_t ICD_ATTR_UAT_INSTR_ID= 0x00000007;
 
-/* =========== Verbose Mode Switch ======== */
+// ==================== Matter Endpoints ====================
+MatterTemperatureSensorBattery AirTempSensor;   // air temp + battery cluster
+MatterHumiditySensor           AirHumSensor;    // air humidity
+MatterPressureSensor           AirPresSensor;   // air pressure
+MatterTemperatureSensor        SoilTempSensor;  // soil temperature (DS18B20)
+MatterHumiditySensor           SoilMoiSensor;   // soil moisture (capacitive)
+
+// ==================== Sensors ====================
+Adafruit_BME280 bme;
+bool bme_ready = false;
+
+OneWire oneWire(ONE_WIRE_PIN);
+DallasTemperature ds18b20(&oneWire);
+bool ds_ready = false;
+
+// ==================== Cached readings ====================
+float g_airTempC  = 25.0f;
+float g_airRH     = 50.0f;
+float g_airHPa    = 1013.0f;
+float g_soilTempC = 20.0f;
+float g_soilMoi   = 50.0f;   // 0–100 %
+
+// ==================== Verbose / power state ====================
 Preferences prefs;
 bool VERBOSE_PRINTS = false;
+static bool s_commissioned    = false;
+static uint32_t s_commissioned_at_ms = 0;
 
-static bool pressed = false;
-static bool longpress_fired = false;
-static uint32_t press_ts = 0;
+static bool     pressed         = false;
+static bool     longpress_fired = false;
+static uint32_t press_ts        = 0;
+static uint32_t last_toggle_ms  = 0;
 
 static constexpr uint32_t DECOMMISSION_HOLD_MS = 5000;
-static constexpr uint32_t DEBOUNCE_MS = 60;
-static uint32_t last_toggle_ms = 0;
-static constexpr uint32_t TOGGLE_COOLDOWN_MS = 300;
+static constexpr uint32_t DEBOUNCE_MS          = 60;
+static constexpr uint32_t TOGGLE_COOLDOWN_MS   = 300;
 
 #define VPRINT(...)   do { if (VERBOSE_PRINTS) Serial.print(__VA_ARGS__); } while (0)
 #define VPRINTLN(...) do { if (VERBOSE_PRINTS) Serial.println(__VA_ARGS__); } while (0)
 #define VPRINTF(...) do { if (VERBOSE_PRINTS) Serial.printf(__VA_ARGS__); } while (0)
 
-// ----------- Matter Endpoints -------------
-MatterTemperatureSensorBattery TempSensor;      // °C (Matter spec)
-MatterHumiditySensor    HumiditySensor;  // %RH
-
-// CONFIG_ENABLE_CHIPOBLE is enabled when BLE is used to commission the Matter Network
-#if !CONFIG_ENABLE_CHIPOBLE
-// WiFi is manually set and started
-const char *ssid = "your-ssid";          // Change this to your WiFi SSID
-const char *password = "your-password";  // Change this to your WiFi password
-#endif
-
-// ---------- SHT41 Init ----------
-#if USE_MINIMAL_SHT4X
-SHT4xMinimal sht4;
-#else
-Adafruit_SHT4x sht4;
-#endif
-bool sht_ready = false;
-
-// ---------- Cached readings ----------
-float g_lastTempC = 50.0f;
-float g_lastRH    = 99.0f;
-
-// ---------- Unit Conversion ----------
-static inline float C_to_F(float c) { return (c * 9.0f / 5.0f) + 32.0f; }
-
-// ---------- LED Blink Helper ---------
+// ==================== LED ====================
 static inline void ledOn()  { digitalWrite(LED_PIN, LOW); }
-static inline void ledOff() { digitalWrite(LED_PIN, HIGH);  }
-
+static inline void ledOff() { digitalWrite(LED_PIN, HIGH); }
 static void blink(uint8_t n) {
   for (uint8_t i = 0; i < n; i++) {
-    ledOn(); 
-    delay(120);
-    ledOff();
-    delay(120);
+    ledOn();  delay(120);
+    ledOff(); delay(120);
   }
 }
 
+// ==================== ICD / Thread helpers ====================
+static esp_pm_lock_handle_t s_no_ls_lock = nullptr;
+
 static void configureThreadIcdMode(bool debug) {
   otInstance *ot = esp_openthread_get_instance();
-  if (!ot) {
-    VPRINTLN("OpenThread instance not ready; ICD config skipped.");
-    return;
-  }
-
+  if (!ot) { VPRINTLN("OpenThread instance not ready; ICD config skipped."); return; }
   if (debug) {
     otLinkSetRxOnWhenIdle(ot, true);
     otLinkSetPollPeriod(ot, THREAD_RX_ON_POLL_MS);
-    VPRINTF("Thread ICD: debug rx_on_when_idle=true, poll=%lu ms\r\n",
-            static_cast<unsigned long>(THREAD_RX_ON_POLL_MS));
   } else {
-    // In normal mode, allow sleepy behavior and reset poll to ICD slow interval.
     otLinkSetRxOnWhenIdle(ot, false);
 #ifdef CONFIG_ICD_SLOW_POLL_INTERVAL_MS
     otLinkSetPollPeriod(ot, CONFIG_ICD_SLOW_POLL_INTERVAL_MS);
 #endif
-    VPRINTLN("Thread ICD: normal mode (sleepy, poll from ICD config).");
   }
 }
 
@@ -152,259 +151,216 @@ static void configureChipLogging(bool verbose) {
 
 static void configureIcdManagementAttributes() {
 #if CONFIG_ENABLE_ICD_SERVER && CONFIG_ENABLE_ICD_USER_ACTIVE_MODE_TRIGGER
-  const uint32_t uat_hint = (1u << 0) | (1u << 8); // power cycle + reset/boot button
+  const uint32_t uat_hint = (1u << 0) | (1u << 8);
   esp_matter_attr_val_t hint = esp_matter_bitmap32(uat_hint);
-  esp_err_t err = esp_matter::attribute::update(
-      0, ICD_MGMT_CLUSTER_ID, ICD_ATTR_UAT_HINT_ID, &hint);
-  if (err != ESP_OK) {
-    VPRINTF("ICD UAT hint update failed: %d\r\n", err);
-  }
-
+  esp_matter::attribute::update(0, ICD_MGMT_CLUSTER_ID, ICD_ATTR_UAT_HINT_ID, &hint);
   static char instruction[] = "Press BOOT to wake";
   esp_matter_attr_val_t instr = esp_matter_char_str(
       instruction, static_cast<uint16_t>(strlen(instruction)));
-  err = esp_matter::attribute::update(
-      0, ICD_MGMT_CLUSTER_ID, ICD_ATTR_UAT_INSTR_ID, &instr);
-  if (err != ESP_OK) {
-    VPRINTF("ICD UAT instruction update failed: %d\r\n", err);
-  }
+  esp_matter::attribute::update(0, ICD_MGMT_CLUSTER_ID, ICD_ATTR_UAT_INSTR_ID, &instr);
 #endif
 }
 
-static bool s_commissioned = false;
-static uint32_t s_commissioned_at_ms = 0;
-
 static void applyPowerPolicy(bool commissioned) {
   const uint32_t now = millis();
-  const bool past_grace = commissioned && (now - s_commissioned_at_ms >= COMMISSION_GRACE_MS);
+  const bool past_grace  = commissioned && (now - s_commissioned_at_ms >= COMMISSION_GRACE_MS);
   const bool allow_sleep = commissioned && !VERBOSE_PRINTS && past_grace;
   if (s_no_ls_lock) {
-    if (allow_sleep) {
-      esp_pm_lock_release(s_no_ls_lock);
-    } else {
-      esp_pm_lock_acquire(s_no_ls_lock);
-    }
+    if (allow_sleep) esp_pm_lock_release(s_no_ls_lock);
+    else             esp_pm_lock_acquire(s_no_ls_lock);
   }
   configureThreadIcdMode(!allow_sleep);
-  static bool last_commissioned = false;
-  static bool last_allow_sleep = false;
-  static bool last_debug = false;
-  static bool first = true;
-  if (first || commissioned != last_commissioned || allow_sleep != last_allow_sleep || VERBOSE_PRINTS != last_debug) {
-    configureChipLogging(VERBOSE_PRINTS);
-    VPRINTF("Power policy: commissioned=%s verbose=%s allow_sleep=%s\r\n",
-            commissioned ? "true" : "false",
-            VERBOSE_PRINTS ? "true" : "false",
-            allow_sleep ? "true" : "false");
-    otInstance *ot = esp_openthread_get_instance();
-    if (ot) {
-      const otLinkModeConfig mode = otThreadGetLinkMode(ot);
-      const bool rx_on = mode.mRxOnWhenIdle;
-      const uint32_t poll_ms = otLinkGetPollPeriod(ot);
-      VPRINTF("Thread ICD state: rx_on_when_idle=%s poll=%lu ms\r\n",
-              rx_on ? "true" : "false",
-              static_cast<unsigned long>(poll_ms));
-    } else {
-      VPRINTLN("Thread ICD state: ot instance not ready");
-    }
-    last_commissioned = commissioned;
-    last_allow_sleep = allow_sleep;
-    last_debug = VERBOSE_PRINTS;
-    first = false;
-  }
+  configureChipLogging(VERBOSE_PRINTS);
 }
-// ---------- VERBOSE MODE HELPER --------
+
+// ==================== Verbose / Prefs ====================
 static void loadDebugMode() {
-  prefs.begin("tinyenv", false);
+  prefs.begin("garden", false);
   VERBOSE_PRINTS = prefs.getBool("debug", false);
   prefs.end();
 }
-
 static void saveDebugMode() {
-  prefs.begin("tinyenv", false);
+  prefs.begin("garden", false);
   prefs.putBool("debug", VERBOSE_PRINTS);
   prefs.end();
 }
 
-// ----------- BOOT BUTTON HANDLER -----------
+// ==================== Boot button ====================
 static void handleBootButton() {
   const uint32_t now = millis();
   const bool btn_low = (digitalRead(BUTTON_PIN) == LOW);
 
-  // Press edge
   if (btn_low && !pressed) {
-    pressed = true;
-    press_ts = now;
-    longpress_fired = false;
+    pressed = true; press_ts = now; longpress_fired = false;
   }
-
-  // Long press action (fire once)
   if (pressed && btn_low && !longpress_fired && (now - press_ts >= DECOMMISSION_HOLD_MS)) {
     longpress_fired = true;
-
     Serial.println("Decommissioning Matter node...");
     Matter.decommission();
-
     blink(3);
   }
-
-  // Release edge
   if (pressed && !btn_low) {
     const uint32_t held_ms = now - press_ts;
     pressed = false;
-
-    // Short press action (only if long press didn't fire)
-    if (!longpress_fired &&
-        held_ms >= DEBOUNCE_MS &&
-        (now - last_toggle_ms) > TOGGLE_COOLDOWN_MS) {
-
+    if (!longpress_fired && held_ms >= DEBOUNCE_MS && (now - last_toggle_ms) > TOGGLE_COOLDOWN_MS) {
       last_toggle_ms = now;
       VERBOSE_PRINTS = !VERBOSE_PRINTS;
       saveDebugMode();
       applyPowerPolicy(Matter.isDeviceCommissioned());
-
       blink(VERBOSE_PRINTS ? 2 : 1);
-      VPRINT("VERBOSE_PRINTS: ");
-      VPRINTLN(VERBOSE_PRINTS ? "ON (no sleep + verbose)" : "OFF (sleep + quiet)");
     }
   }
 }
-// ---------- Battery (A0 via 1:2 divider) ----------
-static constexpr float VBAT_GAIN = 1.0123f;  // <-- Battery sense conversion factor (1.0123 for my XIAO ESP32-C6 w/ 220,000u resistors)
 
-static inline float readBatteryVoltsA0() {
+// ==================== Battery ====================
+static constexpr float VBAT_GAIN = 1.0123f;
+
+static float readBatteryVolts() {
   uint32_t mv = 0;
-  for (int i = 0; i < 16; i++) {
-    uint32_t s = analogReadMilliVolts(VBAT_ADC_PIN);
-    mv += s;
-    delay(2);
-  }
-  float pin_mv = (mv / 16.0f);
-  float vA0    = pin_mv / 1000.0f;            // volts at VBAT_ADC_PIN
-  float vbat   = (vA0 * 2.0f) * VBAT_GAIN;    // undo 1:2 divider, then apply calibration
-  VPRINTF("VBAT_ADC pin avg: %.1f mV | v_pin=%.3f V | vbat=%.3f V\r\n",
-          pin_mv, vA0, vbat);  return vbat;
+  for (int i = 0; i < 16; i++) { mv += analogReadMilliVolts(VBAT_ADC_PIN); delay(2); }
+  float pin_mv = mv / 16.0f;
+  float vbat   = (pin_mv / 1000.0f * 2.0f) * VBAT_GAIN;
+  VPRINTF("VBAT: %.1f mV pin → %.3f V\r\n", pin_mv, vbat);
+  return vbat;
 }
 
-static inline uint8_t voltsToPct(float v) {
-  // Approximate low-drain Li-Ion (3.7V nominal) discharge curve.
-  // Clamp the new ceiling/floor requested by the user.
+static uint8_t voltsToPct(float v) {
   if (v >= 4.14f) return 100;
   if (v <= 3.00f) return 0;
-
   struct Vp { float v; uint8_t p; };
   static const Vp kCurve[] = {
-    {4.14f, 100},
-    {4.10f,  95},
-    {4.00f,  85},
-    {3.90f,  75},
-    {3.80f,  65},
-    {3.70f,  50},
-    {3.60f,  35},
-    {3.50f,  20},
-    {3.40f,  10},
-    {3.30f,   5},
-    {3.20f,   2},
-    {3.00f,   0},
+    {4.14f,100},{4.10f,95},{4.00f,85},{3.90f,75},{3.80f,65},
+    {3.70f,50}, {3.60f,35},{3.50f,20},{3.40f,10},{3.30f, 5},
+    {3.20f, 2}, {3.00f, 0},
   };
-
-  for (size_t i = 0; i + 1 < (sizeof(kCurve) / sizeof(kCurve[0])); ++i) {
-    const Vp hi = kCurve[i];
-    const Vp lo = kCurve[i + 1];
-    if (v <= hi.v && v >= lo.v) {
-      const float t = (v - lo.v) / (hi.v - lo.v);
-      const float p = lo.p + t * (hi.p - lo.p);
-      return (uint8_t)lroundf(p);
+  for (size_t i = 0; i + 1 < sizeof(kCurve)/sizeof(kCurve[0]); ++i) {
+    if (v <= kCurve[i].v && v >= kCurve[i+1].v) {
+      float t = (v - kCurve[i+1].v) / (kCurve[i].v - kCurve[i+1].v);
+      return (uint8_t)lroundf(kCurve[i+1].p + t * (kCurve[i].p - kCurve[i+1].p));
     }
   }
   return 0;
 }
 
-// ---------- SHT41 ----------
-void sensors_init() {
+// ==================== MOSFET power gate ====================
+static void sensorPowerOn() {
+  digitalWrite(SENSOR_PWR_PIN, HIGH);
+  delay(MOSFET_STABILISE_MS);
+}
+static void sensorPowerOff() {
+  digitalWrite(SENSOR_PWR_PIN, LOW);
+}
+
+// ==================== Sensor init ====================
+static void sensors_init() {
+  // BME280 — always powered via 3.3V rail, not gated
   Wire.begin(SDA_PIN, SCL_PIN);
-  Wire.setClock(100000); // conservative for bring-up
+  Wire.setClock(100000);
+  if (bme.begin(0x76, &Wire)) {
+    bme_ready = true;
+    Serial.println("BME280 detected (0x76)");
+  } else if (bme.begin(0x77, &Wire)) {
+    bme_ready = true;
+    Serial.println("BME280 detected (0x77)");
+  } else {
+    Serial.println("BME280 not found on I2C! Check wiring and 3.3V variant.");
+  }
 
-#if USE_MINIMAL_SHT4X
-  if (sht4.begin(Wire)) {
-    sht_ready = true;
-    Serial.println("SHT4x detected");
+  // DS18B20 — power via MOSFET; just configure the library here
+  ds18b20.begin();
+  ds18b20.setResolution(12);      // 12-bit = 0.0625°C resolution, ~750ms conversion
+  ds18b20.setWaitForConversion(false);  // we manage timing manually
+  if (ds18b20.getDeviceCount() > 0) {
+    ds_ready = true;
+    Serial.printf("DS18B20: %d device(s) found\n", ds18b20.getDeviceCount());
   } else {
-    Serial.println("SHT4x not found on I2C!");
+    Serial.println("DS18B20 not found on 1-Wire! Check wiring and pull-up.");
   }
-#else
-  if (sht4.begin()) {
-    sht4.setPrecision(SHT4X_HIGH_PRECISION);
-    sht4.setHeater(SHT4X_NO_HEATER);
-    sht_ready = true;
-    Serial.println("SHT4x detected");
-  } else {
-    Serial.println("SHT4x not found on I2C!");
-  }
-#endif
 }
 
-bool read_sht41(float &tempC, float &rh) {
-  if (!sht_ready) return false;
+// ==================== Soil moisture ADC ====================
+// Returns 0–100 %, where 100 = fully wet and 0 = dry air.
+// The capacitive sensor outputs HIGH voltage when dry, LOW when wet.
+static float readSoilMoisturePct() {
+  int32_t sum = 0;
+  for (int i = 0; i < 8; i++) {
+    sum += analogRead(SOIL_ADC_PIN);
+    delay(5);
+  }
+  int raw = (int)(sum / 8);
+  VPRINTF("Soil ADC raw avg: %d\r\n", raw);
 
-#if USE_MINIMAL_SHT4X
-  return sht4.read(tempC, rh);
-#else
-  sensors_event_t hum, temp;
-  if (!sht4.getEvent(&hum, &temp)) return false;
-
-  tempC = temp.temperature;
-  rh    = hum.relative_humidity;
-  return true;
-#endif
+  // Clamp to calibration range, then invert (dry = high ADC = 0%)
+  raw = constrain(raw, SOIL_WET_RAW, SOIL_DRY_RAW);
+  float pct = 100.0f * (float)(SOIL_DRY_RAW - raw) / (float)(SOIL_DRY_RAW - SOIL_WET_RAW);
+  return pct;
 }
 
-// -------- Sensor Update Function---------
+// ==================== Sensor read + Matter update ====================
 static uint32_t g_update_count = 0;
-static uint32_t g_fail_count = 0;
-static uint32_t g_last_update_ms = 0;
-static uint32_t g_last_update_duration_ms = 0;
+static uint32_t g_fail_count   = 0;
 
 static void sensorUpdate() {
-  const int64_t start_us = esp_timer_get_time();
   ledOn();
-  float tC, rh;
 
-  if (read_sht41(tC, rh)) {
-    g_update_count++;
-    g_lastTempC = tC;
-    g_lastRH    = rh;
-    float vbat   = readBatteryVoltsA0();
-    uint8_t bpct = voltsToPct(vbat);
-    TempSensor.setTemperature(tC);
-    uint32_t mv_to_matter = (uint32_t) lroundf(vbat * 1000.0f);
-    TempSensor.setBatteryVoltageMv(mv_to_matter);
-    TempSensor.setBatteryPercent(bpct);
-    HumiditySensor.setHumidity(rh);
-
-    ledOff();
-
-    VPRINT("Sensor update: ");
-    VPRINT(C_to_F(tC), 1);
-    VPRINT(" F, ");
-    VPRINT(rh, 0);
-    VPRINT(" %RH, ");
-    VPRINT(" VBAT: ");
-    VPRINT(vbat, 3);
-    VPRINT("V (");
-    VPRINT(bpct);
-    VPRINTLN("%)");
-  } else {
-    g_fail_count++;
-    VPRINTLN("SHT41 sensor read failed.");
+  // --- BME280 (always powered) ---
+  if (bme_ready) {
+    g_airTempC = bme.readTemperature();
+    g_airRH    = bme.readHumidity();
+    g_airHPa   = bme.readPressure() / 100.0f;   // Pa → hPa
+    VPRINTF("BME280: %.2f°C  %.1f%%RH  %.1f hPa\r\n", g_airTempC, g_airRH, g_airHPa);
   }
 
-  g_last_update_ms = millis();
-  g_last_update_duration_ms = (uint32_t)((esp_timer_get_time() - start_us) / 1000);
-  VPRINTF("Update #%lu, duration=%lums, fail=%lu\r\n",
+  // --- Gate power to DS18B20 + soil sensor ---
+  sensorPowerOn();
+
+  // Kick off DS18B20 conversion immediately after power-on stabilisation
+  if (ds_ready) {
+    ds18b20.requestTemperatures();
+  }
+
+  // Read soil moisture ADC while DS18B20 is converting (~750ms)
+  g_soilMoi = readSoilMoisturePct();
+  VPRINTF("Soil moisture: %.1f%%\r\n", g_soilMoi);
+
+  // Wait for DS18B20 conversion to complete (requestTemperatures is async)
+  delay(DS18B20_CONVERT_MS);
+
+  if (ds_ready) {
+    float t = ds18b20.getTempCByIndex(0);
+    if (t != DEVICE_DISCONNECTED_C) {
+      g_soilTempC = t;
+      VPRINTF("Soil temp: %.2f°C\r\n", g_soilTempC);
+    } else {
+      g_fail_count++;
+      VPRINTLN("DS18B20 read failed (DEVICE_DISCONNECTED)");
+    }
+  }
+
+  sensorPowerOff();
+
+  // --- Battery ---
+  float   vbat = readBatteryVolts();
+  uint8_t bpct = voltsToPct(vbat);
+
+  // --- Push to Matter ---
+  AirTempSensor.setTemperature(g_airTempC);
+  AirTempSensor.setBatteryVoltageMv((uint32_t)lroundf(vbat * 1000.0f));
+  AirTempSensor.setBatteryPercent(bpct);
+  AirHumSensor.setHumidity(g_airRH);
+  AirPresSensor.setPressure(g_airHPa);
+  SoilTempSensor.setTemperature(g_soilTempC);
+  // Matter humidity units: 0–10000 (hundredths of %)
+  SoilMoiSensor.setHumidity(g_soilMoi);
+
+  ledOff();
+  g_update_count++;
+
+  VPRINTF("Update #%lu  air=%.1f°C %.0f%%RH %.0fhPa  soil=%.1f°C %.0f%%  bat=%.3fV(%u%%)\r\n",
           (unsigned long)g_update_count,
-          (unsigned long)g_last_update_duration_ms,
-          (unsigned long)g_fail_count);
+          g_airTempC, g_airRH, g_airHPa,
+          g_soilTempC, g_soilMoi,
+          vbat, bpct);
 }
 
 // ==================================================
@@ -412,68 +368,70 @@ static void sensorUpdate() {
 // ==================================================
 
 void setup() {
-  pinMode(BUTTON_PIN, INPUT_PULLUP);
-  pinMode(LED_PIN, OUTPUT);
+  pinMode(BUTTON_PIN,     INPUT_PULLUP);
+  pinMode(LED_PIN,        OUTPUT);
+  pinMode(SENSOR_PWR_PIN, OUTPUT);
   ledOff();
+  sensorPowerOff();  // sensors off until first read
 
   Serial.begin(115200);
-  VPRINTLN("\nTiny Room Sensor (headless, Matter + SHT41)");
+  Serial.println("\nGarden Sensor (BME280 + DS18B20 + Soil Moisture — Matter/Thread)");
   delay(200);
 
   loadDebugMode();
-  blink(VERBOSE_PRINTS ? 2 : 1);   // 2 blinks = verbose on, 1 blink = normal
+  blink(VERBOSE_PRINTS ? 2 : 1);
 
-  //Battery reading init
+  // Battery ADC init
   pinMode(VBAT_ADC_PIN, ANALOG);
   analogReadResolution(12);
-  (void)analogReadMilliVolts(VBAT_ADC_PIN); // ensure ADC channel is initialized
   analogSetPinAttenuation(VBAT_ADC_PIN, ADC_11db);
+  (void)analogReadMilliVolts(VBAT_ADC_PIN);
+
+  // Soil ADC — GPIO3 is ADC1_CH3 on ESP32-C6
+  pinMode(SOIL_ADC_PIN, ANALOG);
+  analogSetPinAttenuation(SOIL_ADC_PIN, ADC_11db);
 
   sensors_init();
 
   // Matter endpoints
-  TempSensor.begin(g_lastTempC);   // °C
-  HumiditySensor.begin(g_lastRH);
+  AirTempSensor.begin(g_airTempC);
+  AirHumSensor.begin(g_airRH);
+  AirPresSensor.begin(g_airHPa);
+  SoilTempSensor.begin(g_soilTempC);
+  SoilMoiSensor.begin(g_soilMoi);
+
   esp_pm_lock_create(ESP_PM_NO_LIGHT_SLEEP, 0, "no_ls", &s_no_ls_lock);
 
   Matter.begin();
   const bool commissioned = Matter.isDeviceCommissioned();
-  s_commissioned = commissioned;
-  s_commissioned_at_ms = commissioned ? millis() : 0;
+  s_commissioned        = commissioned;
+  s_commissioned_at_ms  = commissioned ? millis() : 0;
   configureChipLogging(VERBOSE_PRINTS);
   configureIcdManagementAttributes();
   applyPowerPolicy(commissioned);
-  
-  // Commission if needed (info via Serial)
-  if (!commissioned) {
-    String manualCode = Matter.getManualPairingCode().c_str();
-    String qrUrl      = Matter.getOnboardingQRCodeUrl().c_str();
 
+  if (!commissioned) {
     Serial.println("--------------------------------------------------");
     Serial.println("Device not commissioned yet.");
     Serial.print("Manual pairing code: ");
-    Serial.println(manualCode);
+    Serial.println(Matter.getManualPairingCode().c_str());
     Serial.print("QR code URL: ");
-    Serial.println(qrUrl);
-    Serial.println("Use your Matter controller to commission this device.");
+    Serial.println(Matter.getOnboardingQRCodeUrl().c_str());
+    Serial.println("Use Apple Home → Add Accessory → More Options.");
     Serial.println("--------------------------------------------------");
   } else {
     Serial.println("Device already commissioned.");
   }
 
-  /* ==== Power Saving Features Enable ==== */
-  setCpuFrequencyMhz(80);     // Reduce CPU freq (optional but usually helpful)
-
-  esp_pm_config_t pm = {      // Enable dynamic freq scaling + automatic light sleep when idle
-    .max_freq_mhz = 80,
-    .min_freq_mhz = 40,
-    .light_sleep_enable = true
+  setCpuFrequencyMhz(80);
+  esp_pm_config_t pm = {
+    .max_freq_mhz      = 80,
+    .min_freq_mhz      = 40,
+    .light_sleep_enable = true,
   };
   esp_pm_configure(&pm);
 
-  /* ======== Initial Power-on sensor update =====*/
-  sensorUpdate(); // 
-
+  sensorUpdate();   // initial reading on boot
 }
 
 // ===================================================
@@ -481,20 +439,18 @@ void setup() {
 // ===================================================
 
 void loop() {
-
   handleBootButton();
 
   static uint32_t s_next_sample_ms = 0;
-  static bool s_grace_done = false;
-
-  const uint32_t now = millis();
-  const bool commissioned = Matter.isDeviceCommissioned();
+  static bool     s_grace_done     = false;
+  const  uint32_t now              = millis();
+  const  bool     commissioned     = Matter.isDeviceCommissioned();
 
   if (commissioned != s_commissioned) {
-    s_commissioned = commissioned;
+    s_commissioned       = commissioned;
     s_commissioned_at_ms = commissioned ? now : 0;
-    s_next_sample_ms = 0;
-    s_grace_done = false;
+    s_next_sample_ms     = 0;
+    s_grace_done         = false;
     applyPowerPolicy(commissioned);
   }
 
@@ -509,13 +465,12 @@ void loop() {
     return;
   }
 
-  // Commissioning grace window
   if (now - s_commissioned_at_ms < COMMISSION_GRACE_MS) {
     vTaskDelay(pdMS_TO_TICKS(100));
     return;
   }
 
-  const uint32_t period_ms = VERBOSE_PRINTS ? DEBUG_UPDATE_MS : (SLEEP_SECONDS * 1000);
+  const uint32_t period_ms = VERBOSE_PRINTS ? DEBUG_UPDATE_MS : (SLEEP_SECONDS * 1000UL);
   if (s_next_sample_ms == 0 || (int32_t)(now - s_next_sample_ms) >= 0) {
     sensorUpdate();
     s_next_sample_ms = now + period_ms;

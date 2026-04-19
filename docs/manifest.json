@@ -1,0 +1,16 @@
+{
+  "name": "Garden Sensor",
+  "version": "1.0.0",
+  "new_install_prompt_erase": true,
+  "builds": [
+    {
+      "chipFamily": "ESP32-C6",
+      "parts": [
+        { "path": "bootloader.bin",       "offset": 0 },
+        { "path": "partition-table.bin",  "offset": 49152 },
+        { "path": "ota_data_initial.bin", "offset": 118784 },
+        { "path": "garden-sensor.bin",    "offset": 131072 }
+      ]
+    }
+  ]
+}
