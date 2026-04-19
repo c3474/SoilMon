@@ -34,30 +34,15 @@ jobs:
           key: esp-idf-v5.4.1-${{ runner.os }}
 
       # ── Fetch components, patch, and build — all inside one Docker context ──
-      # The esp-idf-ci-action runs in Docker. A separate `run:` step is on the
-      # host and cannot see files written inside the container. So we do
-      # reconfigure (downloads components) + patch + build in one invocation.
+      # Logic lives in ci_build.sh to avoid multi-line command quoting issues
+      # with esp-idf-ci-action. The script: reconfigure → patch arduino-esp32
+      # for IDF 5.4.1 → full build.
       - name: Build firmware
         uses: espressif/esp-idf-ci-action@v1
         with:
           esp_idf_version: v5.4.1
           target: esp32c6
-          command: |
-            idf.py reconfigure
-
-            SLAVE_FILE="managed_components/espressif__arduino-esp32/cores/esp32/esp32-hal-i2c-slave.c"
-            if [ ! -f "$SLAVE_FILE" ]; then
-              echo "ERROR: $SLAVE_FILE not found after reconfigure"
-              exit 1
-            fi
-
-            sed -i 's/ESP_IDF_VERSION_VAL(5, 4, 2) \&\& ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 0)/ESP_IDF_VERSION_VAL(5, 4, 1) \&\& ESP_IDF_VERSION < ESP_IDF_VERSION_VAL(5, 5, 0)/g' "$SLAVE_FILE"
-            sed -i 's/ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 2)/ESP_IDF_VERSION >= ESP_IDF_VERSION_VAL(5, 4, 1)/g' "$SLAVE_FILE"
-            sed -i 's/i2c_ll_slave_set_fifo_mode(i2c->dev, true)/i2c_ll_enable_fifo_mode(i2c->dev, true)/g' "$SLAVE_FILE"
-            echo "Patched $SLAVE_FILE"
-            grep -n "fifo_mode\|4, 1\|4, 2" "$SLAVE_FILE" | head -20
-
-            idf.py build
+          command: bash ci_build.sh
 
       # ── Assemble Pages artifact ───────────────────────────────────────────
       # Merge repo docs/ (index.html, manifest.json) with built binaries.
